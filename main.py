@@ -1,10 +1,10 @@
 import logging
 
 import hydra
-import numpy as np
 from omegaconf import DictConfig, OmegaConf
 
 import src.utils as utils
+from src.data_preprocessing import ADNIPreprocess
 
 log = logging.getLogger(__name__)
 OmegaConf.register_new_resolver("tuple", lambda lst: tuple(lst))
@@ -20,9 +20,11 @@ def main(config: DictConfig):
     preprocessing_pipeline = hydra.utils.instantiate(
         config.preprocessing_pipeline, _recursive_=False
     )
-    print(type(preprocessing_pipeline))
 
-    preprocessing_pipeline.fit(np.random.random((10, 100)))
+    # Run ADNI data preprocessing
+    log.info("Running ADNI data preprocessing")
+    preprocessor = ADNIPreprocess(**config.preprocessing)
+    preprocessor.run()
 
 
 if __name__ == "__main__":

@@ -1,0 +1,5 @@
+# ADNI data preprocessing configuration
+data_path: data/All_Subjects_My_Table_03Jul2025.csv
+mri_path: data/UCSFFSX7_20Jun2025.csv
+output_dir: data/
+variance_threshold: 0.01
