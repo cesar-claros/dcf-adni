@@ -8,6 +8,7 @@ applies variance-based feature selection, and exports the final datasets.
 """
 
 import logging
+from pathlib import Path
 
 import numpy as np
 import pandas as pd
@@ -196,11 +197,30 @@ class ADNIPreprocess:
     # Pipeline steps
     # ------------------------------------------------------------------
 
+    def _resolve_path(self, path: str) -> Path:
+        """Resolve a path relative to the original working directory.
+
+        When running under Hydra the CWD is changed to the run output
+        directory, so relative paths must be resolved against the
+        original project root.
+        """
+        p = Path(path)
+        if p.is_absolute():
+            return p
+        try:
+            import hydra
+            return Path(hydra.utils.get_original_cwd()) / p
+        except (ImportError, AttributeError):
+            # Not running under Hydra — resolve against actual CWD
+            return p.resolve()
+
     def load_data(self) -> None:
         """Load the main subjects table and the MRI table from CSV."""
-        log.info("Loading data from %s and %s", self.data_path, self.mri_path)
-        self.data_df = pd.read_csv(self.data_path)
-        self.mri_df = pd.read_csv(self.mri_path)
+        data_path = self._resolve_path(self.data_path)
+        mri_path = self._resolve_path(self.mri_path)
+        log.info("Loading data from %s and %s", data_path, mri_path)
+        self.data_df = pd.read_csv(data_path)
+        self.mri_df = pd.read_csv(mri_path)
 
     def encode_multihot_variables(self) -> None:
         """One-hot encode all multi-hot columns and concatenate them."""
@@ -464,9 +484,11 @@ class ADNIPreprocess:
 
     def export_datasets(self) -> None:
         """Write the final joint and remaining-test datasets to CSV."""
-        joint_path = f"{self.output_dir}/joint_dataset.csv"
-        remaining_path = f"{self.output_dir}/remaining_test.csv"
-        mri_path = f"{self.output_dir}/mri_joint_dataset.csv"
+        out_dir = self._resolve_path(self.output_dir)
+        out_dir.mkdir(parents=True, exist_ok=True)
+        joint_path = out_dir / "joint_dataset.csv"
+        remaining_path = out_dir / "remaining_test.csv"
+        mri_path = out_dir / "mri_joint_dataset.csv"
 
         log.info("Exporting joint dataset → %s", joint_path)
         self.joint_dataset_df.to_csv(joint_path)
