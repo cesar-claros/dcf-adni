@@ -210,7 +210,7 @@ class ADNIPreprocess:
         try:
             import hydra
             return Path(hydra.utils.get_original_cwd()) / p
-        except (ImportError, AttributeError):
+        except (ImportError, AttributeError, ValueError):
             # Not running under Hydra — resolve against actual CWD
             return p.resolve()
 
