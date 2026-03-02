@@ -1,8 +1,6 @@
 import logging
-
 import hydra
 from omegaconf import DictConfig, OmegaConf
-
 import src.utils as utils
 from src.data_preprocessing import ADNIPreprocess
 
@@ -23,7 +21,7 @@ def main(config: DictConfig):
 
     # Run ADNI data preprocessing
     log.info("Running ADNI data preprocessing")
-    preprocessor = ADNIPreprocess(**config.preprocessing)
+    preprocessor = ADNIPreprocess(**config.preprocessing_pipeline)
     preprocessor.run()
 
 

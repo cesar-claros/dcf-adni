@@ -3,8 +3,8 @@
 # specify here default preprocessing configuration
 defaults:
     # can be any config file in the preprocessing_pipeline folder
-    - preprocessing_pipeline: pca.yaml
-    - preprocessing: preprocessing.yaml
+    # - preprocessing_pipeline: pca.yaml
+    - preprocessing_pipeline: preprocessing.yaml
 
 
 # You might add another configurations: which model to use, which visualizations, etc.
