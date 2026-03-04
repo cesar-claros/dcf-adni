@@ -56,33 +56,78 @@ logger = logging.getLogger(__name__)
 # Model Factory
 # =============================================================================
 
-class _CloneableCatBoost(CatBoostClassifier):
+class _CatBoostWrapper(BaseEstimator):
     """
-    CatBoostClassifier wrapper compatible with sklearn's ``clone()``.
+    Sklearn-compatible CatBoostClassifier wrapper.
 
-    CatBoost internally reorders or modifies the ``cat_features`` parameter
-    during ``__init__``, which causes ``sklearn.base.clone()`` to fail — it
-    detects that a constructor parameter was mutated and raises a
-    ``RuntimeError``.
+    CatBoost internally reorders the ``cat_features`` parameter during
+    ``__init__``, which breaks ``sklearn.base.clone()`` (used by
+    ``BayesSearchCV``, ``cross_val_predict``, etc.).
 
-    This wrapper preserves the original ``cat_features`` value so that
-    ``get_params()`` always returns exactly what was passed to the constructor,
-    allowing ``BayesSearchCV``, ``cross_val_predict``, and other sklearn
-    utilities that rely on ``clone()`` to work correctly.
+    This wrapper avoids the issue entirely by storing hyperparameters as
+    plain attributes (via ``BaseEstimator``) and only instantiating the
+    real ``CatBoostClassifier`` inside ``fit()``. Attribute access to
+    CatBoost-specific properties (e.g., ``tree_count_``,
+    ``calc_leaf_indexes``) is transparently proxied to the fitted model.
     """
 
-    def __init__(self, **kwargs):
-        cat_features = kwargs.get('cat_features')
-        self._original_cat_features = (
-            list(cat_features) if cat_features is not None else None
-        )
-        super().__init__(**kwargs)
+    def __init__(self, cat_features=None, verbose=0, random_state=None,
+                 iterations=None, learning_rate=None, depth=None,
+                 l2_leaf_reg=None, bagging_temperature=None,
+                 border_count=None):
+        self.cat_features = cat_features
+        self.verbose = verbose
+        self.random_state = random_state
+        self.iterations = iterations
+        self.learning_rate = learning_rate
+        self.depth = depth
+        self.l2_leaf_reg = l2_leaf_reg
+        self.bagging_temperature = bagging_temperature
+        self.border_count = border_count
 
-    def get_params(self, deep=True):
-        params = super().get_params()
-        if self._original_cat_features is not None:
-            params['cat_features'] = list(self._original_cat_features)
-        return params
+    def _build_catboost(self):
+        """Create a CatBoostClassifier from current parameter values."""
+        params = {
+            'cat_features': self.cat_features,
+            'verbose': self.verbose,
+            'random_state': self.random_state,
+            'iterations': self.iterations,
+            'learning_rate': self.learning_rate,
+            'depth': self.depth,
+            'l2_leaf_reg': self.l2_leaf_reg,
+            'bagging_temperature': self.bagging_temperature,
+            'border_count': self.border_count,
+        }
+        # Only pass non-None params to CatBoost
+        return CatBoostClassifier(**{k: v for k, v in params.items() if v is not None})
+
+    def fit(self, X, y, **kwargs):
+        self.model_ = self._build_catboost()
+        self.model_.fit(X, y, **kwargs)
+        self.classes_ = self.model_.classes_
+        return self
+
+    def predict(self, X):
+        return self.model_.predict(X)
+
+    def predict_proba(self, X):
+        return self.model_.predict_proba(X)
+
+    def score(self, X, y):
+        return self.model_.score(X, y)
+
+    def __getattr__(self, name):
+        """Proxy attribute access to the fitted CatBoost model."""
+        # Avoid infinite recursion on dunder lookups (pickling, copying)
+        if name.startswith('__') and name.endswith('__'):
+            raise AttributeError(name)
+        try:
+            model = object.__getattribute__(self, 'model_')
+            return getattr(model, name)
+        except AttributeError:
+            raise AttributeError(
+                f"'{type(self).__name__}' has no attribute '{name}'"
+            )
 
 
 def create_model(model_name, seed=0, cat_vars=None):
@@ -118,7 +163,7 @@ def create_model(model_name, seed=0, cat_vars=None):
             random_state=seed,
         )
     elif model_name == 'catboost':
-        return _CloneableCatBoost(
+        return _CatBoostWrapper(
             verbose=0,
             random_state=seed,
             cat_features=cat_vars,
