@@ -1,0 +1,123 @@
+# =============================================================================
+# Model Training Configuration
+# =============================================================================
+# WoE (Weight of Evidence) binning parameters and categorical variable lists
+# for the BIOM and MRF feature groups.
+
+# --- BIOM (Biomarker) Feature Group ---
+
+woe_dict_biom:
+  ABETA42:       { monotonic_trend: auto_asc_desc }
+  BAT126:        { monotonic_trend: auto_asc_desc }
+  PTAU:          { monotonic_trend: auto_asc_desc }
+  RCT14:         { monotonic_trend: auto_asc_desc }
+  RCT392:        { monotonic_trend: auto_asc_desc }
+  TAU:           { monotonic_trend: auto_asc_desc }
+  FAQTOTAL:      { monotonic_trend: auto_asc_desc }
+  LDELTOTAL:     { monotonic_trend: auto_asc_desc }
+  LIMMTOTAL:     { monotonic_trend: auto_asc_desc }
+  MMSCORE:       { monotonic_trend: auto_asc_desc }
+  TOTAL13:       { monotonic_trend: auto_asc_desc }
+  TOTSCORE:      { monotonic_trend: auto_asc_desc }
+  TRAASCOR:      { monotonic_trend: auto_asc_desc }
+  GDTOTAL:       { monotonic_trend: auto_asc_desc }
+  HMT40:         { monotonic_trend: auto_asc_desc }
+  NPIDSEV:       { monotonic_trend: auto_asc_desc }
+  NPIDTOT:       { monotonic_trend: auto_asc_desc }
+  BSXCHRON:      { monotonic_trend: auto_asc_desc }
+  BSXSEVER:      { monotonic_trend: auto_asc_desc }
+  HMSCORE:       { monotonic_trend: auto_asc_desc }
+  DXCONFID:      { monotonic_trend: auto_asc_desc }
+  subject_age:   { monotonic_trend: ascending }
+  PTAU/ABETA42:  { monotonic_trend: auto_asc_desc }
+  TAU/ABETA42:   { monotonic_trend: auto_asc_desc }
+
+categorical_biom:
+  - FAQFINAN
+  - FAQTRAVL
+  - NXGAIT
+  - BCDPMOOD
+  - NPID
+  - NPID8
+  - BCHDACHE
+  - BCMUSCLE
+  - BCVISION
+  - BSXSYMNO
+  - MHCUR
+  - MHNUM
+  - PTGENDER
+  - medical_old
+  - medical_current
+
+# --- MRF (Modifiable Risk Factor) Feature Group ---
+
+woe_dict_mrf:
+  years_retired:     { monotonic_trend: auto_asc_desc }
+  GLUCOSE:           { monotonic_trend: auto_asc_desc }
+  NPIKTOT:           { monotonic_trend: auto_asc_desc }
+  RCT1408:           { monotonic_trend: auto_asc_desc }
+  RCT19:             { monotonic_trend: auto_asc_desc }
+  RCT20:             { monotonic_trend: auto_asc_desc }
+  VSBPDIA:           { monotonic_trend: auto_asc_desc }
+  VSBPSYS:           { monotonic_trend: auto_asc_desc }
+  BMI:               { monotonic_trend: auto_asc_desc }
+  MH14AALCH:         { monotonic_trend: auto_asc_desc }
+  MH16ASMOK:         { monotonic_trend: auto_asc_desc }
+  MH16CSMOK:         { monotonic_trend: auto_asc_desc }
+  subject_age:       { monotonic_trend: ascending }
+  PTEDUCAT:          { monotonic_trend: descending }
+  social_isolation:  { monotonic_trend: auto_asc_desc }
+  education_retired: { monotonic_trend: descending }
+  NPIK9A:            { monotonic_trend: auto_asc_desc }
+  NPIK9B:            { monotonic_trend: auto_asc_desc }
+  NPIK9C:            { monotonic_trend: auto_asc_desc }
+
+categorical_mrf:
+  - PTHOME
+  - PTMARRY
+  - PTNOTRT
+  - PTPLANG
+  - PTGENDER
+  - HMHYPERT
+  - NPIK
+  - NPIK1
+  - NPIK2
+  - NPIK4
+  - NPIK6
+  - MH14ALCH
+  - MH16SMOK
+  - BCINSOMN
+  - MH12RENA
+  - MH4CARD
+  - NXAUDITO
+  - PXHEART
+  - PXPERIPH
+  - lives_alone
+  - married_homeowner
+  - retired_lives_alone
+  - homeowner
+
+# --- Model Hyperparameter Search Spaces ---
+# These are defined in Python code since skopt types (Integer, Real)
+# are not natively YAML-serializable.
+
+# --- Pipeline Settings ---
+
+pipeline:
+  n_iter: 50           # Bayesian optimization iterations per model
+  n_splits: 5          # Outer CV folds
+  n_rules: 100         # Top leaf memberships for BIOM+rMRF
+  n_subset: 30         # Top DCG features for BIOM+sMRF
+  seed_cv: 0           # Inner CV random seed
+  seed_rf: 0           # Model random seed
+  seed_bayes: 0        # Bayesian search random seed
+
+# --- ROC Plot Colors ---
+
+plot_colors:
+  libra: brown
+  biom: magenta
+  mrf: cyan
+  biom_mrf: blue
+  biom_smrf: green
+  biom_rmrf: red
