@@ -12,6 +12,7 @@ woe_dict_biom:
   PTAU:          { monotonic_trend: auto_asc_desc }
   RCT14:         { monotonic_trend: auto_asc_desc }
   RCT392:        { monotonic_trend: auto_asc_desc }
+  RCT1408:       { monotonic_trend: auto_asc_desc }
   TAU:           { monotonic_trend: auto_asc_desc }
   FAQTOTAL:      { monotonic_trend: auto_asc_desc }
   LDELTOTAL:     { monotonic_trend: auto_asc_desc }
@@ -55,7 +56,6 @@ woe_dict_mrf:
   years_retired:     { monotonic_trend: auto_asc_desc }
   GLUCOSE:           { monotonic_trend: auto_asc_desc }
   NPIKTOT:           { monotonic_trend: auto_asc_desc }
-  RCT1408:           { monotonic_trend: auto_asc_desc }
   RCT19:             { monotonic_trend: auto_asc_desc }
   RCT20:             { monotonic_trend: auto_asc_desc }
   VSBPDIA:           { monotonic_trend: auto_asc_desc }

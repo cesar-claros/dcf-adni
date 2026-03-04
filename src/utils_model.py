@@ -56,6 +56,35 @@ logger = logging.getLogger(__name__)
 # Model Factory
 # =============================================================================
 
+class _CloneableCatBoost(CatBoostClassifier):
+    """
+    CatBoostClassifier wrapper compatible with sklearn's ``clone()``.
+
+    CatBoost internally reorders or modifies the ``cat_features`` parameter
+    during ``__init__``, which causes ``sklearn.base.clone()`` to fail — it
+    detects that a constructor parameter was mutated and raises a
+    ``RuntimeError``.
+
+    This wrapper preserves the original ``cat_features`` value so that
+    ``get_params()`` always returns exactly what was passed to the constructor,
+    allowing ``BayesSearchCV``, ``cross_val_predict``, and other sklearn
+    utilities that rely on ``clone()`` to work correctly.
+    """
+
+    def __init__(self, **kwargs):
+        cat_features = kwargs.get('cat_features')
+        self._original_cat_features = (
+            list(cat_features) if cat_features is not None else None
+        )
+        super().__init__(**kwargs)
+
+    def get_params(self, deep=True):
+        params = super().get_params(deep)
+        if self._original_cat_features is not None:
+            params['cat_features'] = list(self._original_cat_features)
+        return params
+
+
 def create_model(model_name, seed=0, cat_vars=None):
     """
     Factory function that creates a configured classifier instance.
@@ -89,7 +118,7 @@ def create_model(model_name, seed=0, cat_vars=None):
             random_state=seed,
         )
     elif model_name == 'catboost':
-        return CatBoostClassifier(
+        return _CloneableCatBoost(
             verbose=0,
             random_state=seed,
             cat_features=cat_vars,
