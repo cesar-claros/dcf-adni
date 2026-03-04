@@ -79,7 +79,7 @@ class _CloneableCatBoost(CatBoostClassifier):
         super().__init__(**kwargs)
 
     def get_params(self, deep=True):
-        params = super().get_params(deep)
+        params = super().get_params()
         if self._original_cat_features is not None:
             params['cat_features'] = list(self._original_cat_features)
         return params
