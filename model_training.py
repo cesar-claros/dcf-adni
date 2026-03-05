@@ -53,6 +53,7 @@ import pandas as pd
 import seaborn as sns
 import yaml
 from catboost import Pool
+from tqdm import tqdm
 from sklearn.metrics import RocCurveDisplay
 from sklearn.model_selection import (
     StratifiedGroupKFold,
@@ -327,9 +328,15 @@ class ModelTrainingPipeline:
 
         # ----- Step 6: Train all models -----
         results = {}
+        model_steps = [
+            'LIBRA', 'BIOM+MRF', 'BIOM', 'MRF',
+            'Rule extraction', 'BIOM+rMRF', 'BIOM+sMRF',
+        ]
+        pbar = tqdm(total=len(model_steps), desc='Training models', unit='model')
 
         # 6a. LIBRA model
-        logger.info("Training LIBRA model...")
+        pbar.set_description('Training LIBRA')
+        pbar.update(1)
         libra_bs, libra_score = self._train_single_model(
             X_train=libra_train, y_train=y_train,
             X_test=libra_test, y_test=y_test,
@@ -341,7 +348,8 @@ class ModelTrainingPipeline:
         )
 
         # 6b. BIOM+MRF model
-        logger.info("Training BIOM+MRF model...")
+        pbar.set_description('Training BIOM+MRF')
+        pbar.update(1)
         biom_mrf_bs, biom_mrf_score = self._train_single_model(
             X_train=X_biom_mrf_train, y_train=y_train, 
             X_test=X_biom_mrf_test, y_test=y_test,
@@ -353,7 +361,8 @@ class ModelTrainingPipeline:
         )
 
         # 6c. BIOM model
-        logger.info("Training BIOM model...")
+        pbar.set_description('Training BIOM')
+        pbar.update(1)
         biom_bs, biom_score = self._train_single_model(
             X_train=X_biom_train, y_train=y_train,
             X_test=X_biom_test, y_test=y_test,
@@ -365,7 +374,8 @@ class ModelTrainingPipeline:
         )
 
         # 6d. MRF model
-        logger.info("Training MRF model...")
+        pbar.set_description('Training MRF')
+        pbar.update(1)
         mrf_bs, mrf_score = self._train_single_model(
             X_train=X_mrf_train, y_train=y_train,
             X_test=X_mrf_test, y_test=y_test,
@@ -377,7 +387,8 @@ class ModelTrainingPipeline:
         )
 
         # 6e. Extract tree rules from MRF model for rMRF/sMRF
-        logger.info("Extracting tree rules from MRF model...")
+        pbar.set_description('Extracting tree rules')
+        pbar.update(1)
         mrf_train_pool = Pool(
             data=X_mrf_train, label=y_train,
             cat_features=categorical_mrf,
@@ -400,7 +411,8 @@ class ModelTrainingPipeline:
         )
 
         # 6f. BIOM+rMRF model (biomarker + top rule-based leaf memberships)
-        logger.info("Training BIOM+rMRF model...")
+        pbar.set_description('Training BIOM+rMRF')
+        pbar.update(1)
         biom_rmrf_bs, biom_rmrf_score = search_rules(
             X_biom_train, lm_train.iloc[:, :self.n_rules], y_train,
             X_biom_test, lm_test.iloc[:, :self.n_rules], y_test,
@@ -434,7 +446,8 @@ class ModelTrainingPipeline:
         )
 
         # 6g. BIOM+sMRF model (biomarker + top DCG-selected MRF features)
-        logger.info("Training BIOM+sMRF model...")
+        pbar.set_description('Training BIOM+sMRF')
+        next(iter(pbar))
         top_vars = dcg_importance.index[:self.n_subset]
         repeated_smrf = list(set(top_vars).intersection(set(X_biom_train.columns)))
         top_vars = top_vars.drop(repeated_smrf)
@@ -464,6 +477,8 @@ class ModelTrainingPipeline:
             biom_smrf_bs, X_biom_smrf_train, y_train, groups_train,
             biom_smrf_score,
         )
+
+        pbar.close()
 
         # ----- Step 7: Plot ROC curves -----
         logger.info("Generating ROC plots...")

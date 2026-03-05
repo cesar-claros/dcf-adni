@@ -927,10 +927,19 @@ def train_model(X_train, y_train, X_test, y_test, param_space,
         n_jobs=n_jobs, verbose=0, random_state=seed_bayes,
     )
 
+    # tqdm progress bar for Bayesian search iterations
+    pbar = tqdm(total=n_iter, desc=f'BayesSearch ({model})', unit='iter')
+
+    def _on_step(result):
+        pbar.update(1)
+        pbar.set_postfix(best_score=f'{result.fun:.4f}' if hasattr(result, 'fun') else '...')
+        return True  # continue searching
+
     if groups is None:
-        bayes_search.fit(X_train, y_train.values.squeeze())
+        bayes_search.fit(X_train, y_train.values.squeeze(), callback=_on_step)
     else:
-        bayes_search.fit(X=X_train, y=y_train.values.squeeze(), groups=groups)
+        bayes_search.fit(X=X_train, y=y_train.values.squeeze(), groups=groups, callback=_on_step)
+    pbar.close()
 
     logger.info(f"Best Parameters: {bayes_search.best_params_}")
     test_score = bayes_search.best_estimator_.score(X_test, y_test.values.squeeze())
@@ -1004,10 +1013,19 @@ def search_rules(df1_train, df2_train, y_train, df1_test, df2_test, y_test,
         n_jobs=n_jobs, verbose=0, random_state=seed_bayes,
     )
 
+    # tqdm progress bar for Bayesian search iterations
+    pbar = tqdm(total=n_iter, desc=f'BayesSearch+RFE ({model})', unit='iter')
+
+    def _on_step(result):
+        pbar.update(1)
+        pbar.set_postfix(best_score=f'{result.fun:.4f}' if hasattr(result, 'fun') else '...')
+        return True
+
     if groups is None:
-        bayes_search.fit(X=X_combined, y=y_train.values.squeeze())
+        bayes_search.fit(X=X_combined, y=y_train.values.squeeze(), callback=_on_step)
     else:
-        bayes_search.fit(X=X_combined, y=y_train.values.squeeze(), groups=groups)
+        bayes_search.fit(X=X_combined, y=y_train.values.squeeze(), groups=groups, callback=_on_step)
+    pbar.close()
 
     logger.info(f"Best Parameters: {bayes_search.best_params_}")
     X_test = pd.merge(df1_test, df2_test, left_index=True, right_index=True)
