@@ -918,9 +918,11 @@ def train_model(X_train, y_train, X_test, y_test, param_space,
             - ``test_score``: Accuracy on the test set.
     """
     m = create_model(model, seed=seed_rf, cat_vars=cat_vars)
+    # Use n_jobs=1 for GPU models to avoid OOM from parallel CUDA processes
+    n_jobs = 1 if model == 'catboost' else -1
     bayes_search = BayesSearchCV(
         m, param_space, n_iter=n_iter, cv=cv,
-        n_jobs=-1, verbose=0, random_state=seed_bayes,
+        n_jobs=n_jobs, verbose=0, random_state=seed_bayes,
     )
 
     if groups is None:
@@ -993,9 +995,11 @@ def search_rules(df1_train, df2_train, y_train, df1_test, df2_test, y_test,
         ('model', m),
     ])
 
+    # Use n_jobs=1 for GPU models to avoid OOM from parallel CUDA processes
+    n_jobs = 1 if model == 'catboost' else -1
     bayes_search = BayesSearchCV(
         pipeline, param_grid, n_iter=n_iter, cv=cv,
-        n_jobs=-1, verbose=0, random_state=seed_bayes,
+        n_jobs=n_jobs, verbose=0, random_state=seed_bayes,
     )
 
     if groups is None:

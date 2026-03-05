@@ -421,7 +421,8 @@ class ModelTrainingPipeline:
         )
         biom_rmrf_cv = cross_validate(
             biom_rmrf_bs.best_estimator_, X_biom_rmrf_train, y_train,
-            groups=groups_train, cv=self.cv_group_train, n_jobs=-1,
+            groups=groups_train, cv=self.cv_group_train,
+            n_jobs=1 if self.model_name == 'catboost' else -1,
             return_train_score=True, return_estimator=True, return_indices=True,
         )
 
@@ -527,14 +528,16 @@ class ModelTrainingPipeline:
         Returns:
             dict: Contains 'fold_predictions', 'cv_scores', and 'test_score'.
         """
+        # Use n_jobs=1 for CatBoost GPU to avoid OOM from parallel CUDA processes
+        n_jobs = 1 if self.model_name == 'catboost' else -1
         fold_predictions = cross_val_predict(
             bayes_search.best_estimator_, X_train, y_train,
             groups=groups, cv=self.cv_group_train,
-            method='predict_proba', n_jobs=-1,
+            method='predict_proba', n_jobs=n_jobs,
         )
         cv_scores = cross_val_score(
             bayes_search.best_estimator_, X_train, y_train,
-            groups=groups, cv=self.cv_group_train, n_jobs=-1,
+            groups=groups, cv=self.cv_group_train, n_jobs=n_jobs,
         )
         return {
             'fold_predictions': fold_predictions,
