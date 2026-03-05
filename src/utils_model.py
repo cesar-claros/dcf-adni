@@ -125,13 +125,22 @@ class _CatBoostWrapper(BaseEstimator, ClassifierMixin):
         # Avoid infinite recursion on dunder lookups (pickling, copying)
         if name.startswith('__') and name.endswith('__'):
             raise AttributeError(name)
-        try:
-            model = object.__getattribute__(self, 'model_')
-            return getattr(model, name)
-        except AttributeError:
-            raise AttributeError(
-                f"'{type(self).__name__}' has no attribute '{name}'"
-            )
+        # Only proxy if the model has been fitted
+        if 'model_' in self.__dict__:
+            return getattr(self.model_, name)
+        raise AttributeError(
+            f"'{type(self).__name__}' has no attribute '{name}'"
+        )
+
+    def _more_tags(self):
+        """Sklearn < 1.6 tag override."""
+        return {'requires_y': True}
+
+    def __sklearn_tags__(self):
+        """Sklearn >= 1.6 tag override — ensures classifier type is set."""
+        tags = super().__sklearn_tags__()
+        tags.estimator_type = "classifier"
+        return tags
 
 
 def create_model(model_name, seed=0, cat_vars=None, gpu=False):
@@ -925,7 +934,7 @@ def train_model(X_train, y_train, X_test, y_test, param_space,
     """
     m = create_model(model, seed=seed_rf, cat_vars=cat_vars, gpu=gpu)
     bayes_search = BayesSearchCV(
-        m, param_space, n_iter=n_iter, cv=cv,
+        m, param_space, n_iter=n_iter, cv=cv, scoring='roc_auc',
         n_jobs=n_jobs, verbose=0, random_state=seed_bayes,
     )
 
