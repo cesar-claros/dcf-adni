@@ -71,6 +71,8 @@ class _CatBoostWrapper(BaseEstimator, ClassifierMixin):
     ``calc_leaf_indexes``) is transparently proxied to the fitted model.
     """
 
+    _estimator_type = "classifier"
+
     def __init__(self, cat_features=None, verbose=0, random_state=None,
                  iterations=None, learning_rate=None, depth=None,
                  l2_leaf_reg=None, bagging_temperature=None,
