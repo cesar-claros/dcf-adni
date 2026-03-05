@@ -36,7 +36,7 @@ import pandas as pd
 import shap
 import joblib
 from scipy.stats import chi2_contingency
-from sklearn.base import BaseEstimator, TransformerMixin
+from sklearn.base import BaseEstimator, ClassifierMixin, TransformerMixin
 from sklearn.compose import ColumnTransformer
 from sklearn.ensemble import RandomForestClassifier
 from sklearn.feature_selection import RFE
@@ -56,7 +56,7 @@ logger = logging.getLogger(__name__)
 # Model Factory
 # =============================================================================
 
-class _CatBoostWrapper(BaseEstimator):
+class _CatBoostWrapper(BaseEstimator, ClassifierMixin):
     """
     Sklearn-compatible CatBoostClassifier wrapper.
 
