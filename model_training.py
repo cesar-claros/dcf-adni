@@ -54,11 +54,9 @@ import seaborn as sns
 import yaml
 from catboost import Pool
 from tqdm import tqdm
-from sklearn.metrics import RocCurveDisplay
+from sklearn.metrics import RocCurveDisplay, roc_auc_score
 from sklearn.model_selection import (
     StratifiedGroupKFold,
-    cross_val_predict,
-    cross_val_score,
     cross_validate,
 )
 from skopt.space import Real, Integer
@@ -197,30 +195,27 @@ class ModelTrainingPipeline:
             raise ValueError(f"Unknown model '{model_name}'. Choose from: {list(PARAM_SPACES.keys())}")
         self.param_space = PARAM_SPACES[model_name]
 
-        # WoE transformers (initialized from YAML config)
-        self.woe_biom = WoETransformer(self.woe_dict_biom, self.categorical_biom)
-        self.woe_mrf = WoETransformer(self.woe_dict_mrf, self.categorical_mrf)
-
-        # Cross-validation splitters
-        self.sgkf = StratifiedGroupKFold(
-            n_splits=self.n_splits, shuffle=True, random_state=seed_split
-        )
-        self.cv_group_train = StratifiedGroupKFold(
+        # Inner CV splitter (used by BayesSearchCV for hyperparameter tuning)
+        self.cv_inner = StratifiedGroupKFold(
             n_splits=self.n_splits, shuffle=True, random_state=self.seed_cv
         )
 
     def run(self):
         """
-        Execute the full training pipeline.
+        Execute the full nested cross-validation pipeline.
 
-        Loads data, obtains a single stratified group split, trains all six
-        model variants, generates ROC plots, and saves results.
+        **Outer loop** (this method): K-fold split for unbiased evaluation.
+        Each outer fold produces a train/test partition. The test set is
+        never seen during hyperparameter tuning.
 
-        The outer split uses ``StratifiedGroupKFold`` to produce a single
-        train/test partition that respects both class balance (stratified)
-        and subject grouping (no subject appears in both train and test).
-        Only the first fold is used — ``next(iter(...))`` cleanly retrieves
-        it without a loop+break pattern.
+        **Inner loop** (inside ``BayesSearchCV``): K-fold split within the
+        outer training set for hyperparameter optimization.
+
+        This nested design eliminates the optimistic bias that occurs when
+        the same CV splitter is used for both tuning and evaluation.
+
+        Both loops use ``StratifiedGroupKFold`` to preserve class balance
+        and ensure subjects with the same group stay in the same set.
         """
         # Load and engineer features
         logger.info("Loading data...")
@@ -234,23 +229,36 @@ class ModelTrainingPipeline:
         dataset_df = feature_engineering(joint_dataset_df)
         additional_test_df = feature_engineering(remaining_test_df)
 
-        # Single stratified group split — takes the first fold
-        # StratifiedGroupKFold ensures:
-        #   - Stratification: class proportions are preserved in both sets
-        #   - Grouping: subjects with the same 'group' stay in the same set
-        train_index, test_index = next(iter(
-            self.sgkf.split(
-                dataset_df.drop(['transition'], axis='columns'),
-                dataset_df['transition'],
-                dataset_df['group'],
-            )
-        ))
-
-        logger.info(f"Train: {len(train_index)} samples, Test: {len(test_index)} samples")
-        results = self._train_fold(
-            0, dataset_df, additional_test_df, train_index, test_index
+        # Outer CV loop — each fold gives an unbiased test evaluation
+        outer_cv = StratifiedGroupKFold(
+            n_splits=self.n_splits, shuffle=True, random_state=self.seed_split
         )
-        self._save_results(0, results)
+        X_all = dataset_df.drop(['transition'], axis='columns')
+        y_all = dataset_df['transition']
+        groups_all = dataset_df['group']
+
+        all_fold_results = []
+        for k, (train_index, test_index) in enumerate(tqdm(
+            outer_cv.split(X_all, y_all, groups_all),
+            total=self.n_splits, desc='Outer CV folds', unit='fold',
+        )):
+            logger.info(f"\n{'='*60}")
+            logger.info(f"Outer fold {k+1}/{self.n_splits}: "
+                        f"Train={len(train_index)}, Test={len(test_index)}")
+            logger.info(f"{'='*60}")
+
+            # Fresh WoE transformers per fold to prevent data leakage
+            self.woe_biom = WoETransformer(self.woe_dict_biom, self.categorical_biom)
+            self.woe_mrf = WoETransformer(self.woe_dict_mrf, self.categorical_mrf)
+
+            fold_results = self._train_fold(
+                k, dataset_df, additional_test_df, train_index, test_index
+            )
+            all_fold_results.append(fold_results)
+
+        # Aggregate and save
+        self._aggregate_results(all_fold_results)
+        self._save_results(all_fold_results)
 
     def _train_fold(self, fold_k, dataset_df, additional_test_df,
                     train_index, test_index):
@@ -342,9 +350,8 @@ class ModelTrainingPipeline:
             X_test=libra_test, y_test=y_test,
             groups=groups_train,
         )
-        results['libra'] = self._collect_cv_results(
-            libra_bs, libra_train, y_train, groups_train,
-            libra_score,
+        results['libra'] = self._evaluate_on_test(
+            libra_bs, libra_test, y_test,
         )
 
         # 6b. BIOM+MRF model
@@ -355,9 +362,8 @@ class ModelTrainingPipeline:
             X_test=X_biom_mrf_test, y_test=y_test,
             groups=groups_train, cat_vars=cat_vars_biom_mrf,
         )
-        results['biom_mrf'] = self._collect_cv_results(
-            biom_mrf_bs, X_biom_mrf_train, y_train, groups_train,
-            biom_mrf_score,
+        results['biom_mrf'] = self._evaluate_on_test(
+            biom_mrf_bs, X_biom_mrf_test, y_test,
         )
 
         # 6c. BIOM model
@@ -368,9 +374,8 @@ class ModelTrainingPipeline:
             X_test=X_biom_test, y_test=y_test,
             groups=groups_train, cat_vars=categorical_biom,
         )
-        results['biom'] = self._collect_cv_results(
-            biom_bs, X_biom_train, y_train, groups_train,
-            biom_score,
+        results['biom'] = self._evaluate_on_test(
+            biom_bs, X_biom_test, y_test,
         )
 
         # 6d. MRF model
@@ -381,9 +386,8 @@ class ModelTrainingPipeline:
             X_test=X_mrf_test, y_test=y_test,
             groups=groups_train, cat_vars=categorical_mrf,
         )
-        results['mrf'] = self._collect_cv_results(
-            mrf_bs, X_mrf_train, y_train, groups_train,
-            mrf_score,
+        results['mrf'] = self._evaluate_on_test(
+            mrf_bs, X_mrf_test, y_test,
         )
 
         # 6e. Extract tree rules from MRF model for rMRF/sMRF
@@ -418,7 +422,7 @@ class ModelTrainingPipeline:
             X_biom_test, lm_test.iloc[:, :self.n_rules], y_test,
             self.param_space, model=self.model_name,
             seed_rf=self.seed_rf, seed_bayes=self.seed_bayes,
-            n_iter=self.n_iter, cv=self.cv_group_train,
+            n_iter=self.n_iter, cv=self.cv_inner,
             groups=groups_train, cat_vars=categorical_biom,
             n_jobs=self.n_jobs, gpu=self.gpu,
         )
@@ -434,13 +438,12 @@ class ModelTrainingPipeline:
             X_biom_all_test, lm_all_test.iloc[:, :self.n_rules],
             left_index=True, right_index=True,
         )
-        results['biom_rmrf'] = self._collect_cv_results(
-            biom_rmrf_bs, X_biom_rmrf_train, y_train, groups_train,
-            biom_rmrf_score,
+        results['biom_rmrf'] = self._evaluate_on_test(
+            biom_rmrf_bs, X_biom_rmrf_test, y_test,
         )
         biom_rmrf_cv = cross_validate(
             biom_rmrf_bs.best_estimator_, X_biom_rmrf_train, y_train,
-            groups=groups_train, cv=self.cv_group_train,
+            groups=groups_train, cv=self.cv_inner,
             n_jobs=self.n_jobs,
             return_train_score=True, return_estimator=True, return_indices=True,
         )
@@ -457,7 +460,7 @@ class ModelTrainingPipeline:
             X_biom_test, X_mrf_test[top_vars], y_test,
             self.param_space, model=self.model_name,
             seed_rf=self.seed_rf, seed_bayes=self.seed_bayes,
-            n_iter=self.n_iter, cv=self.cv_group_train,
+            n_iter=self.n_iter, cv=self.cv_inner,
             groups=groups_train, cat_vars=categorical_biom,
             n_jobs=self.n_jobs, gpu=self.gpu,
         )
@@ -473,9 +476,8 @@ class ModelTrainingPipeline:
             X_biom_all_test, X_mrf_all_test[top_vars],
             left_index=True, right_index=True,
         )
-        results['biom_smrf'] = self._collect_cv_results(
-            biom_smrf_bs, X_biom_smrf_train, y_train, groups_train,
-            biom_smrf_score,
+        results['biom_smrf'] = self._evaluate_on_test(
+            biom_smrf_bs, X_biom_smrf_test, y_test,
         )
 
         pbar.close()
@@ -491,12 +493,17 @@ class ModelTrainingPipeline:
             'biom_smrf': (biom_smrf_bs, X_biom_smrf_train, X_biom_smrf_test, X_biom_smrf_all_test),
         }
         self._plot_all_roc(fold_k, model_data, results, y_train, y_test, y_all_test)
-        self._plot_score_boxplot(fold_k, results)
 
-        # ----- Step 8: Assemble full results dict -----
+        # ----- Step 8: Assemble fold results -----
         return {
+            'fold_k': fold_k,
             'train_index': train_index,
             'test_index': test_index,
+            'results': results,
+            'model_data': model_data,
+            'y_train': y_train,
+            'y_test': y_test,
+            'y_all_test': y_all_test,
             'lm_train': lm_train,
             'lm_test': lm_test,
             'lm_all_test': lm_all_test,
@@ -505,14 +512,7 @@ class ModelTrainingPipeline:
             'unique_trees': unique_trees,
             'unique_features': unique_features,
             'corr': correlation,
-            'cv_group_train': self.cv_group_train,
             'biom_rmrf_cv': biom_rmrf_cv,
-            'X_biom_rmrf_train': X_biom_rmrf_train,
-            'X_biom_rmrf_test': X_biom_rmrf_test,
-            **{f'{name}_bayes_search': model_data[name][0] for name in model_data},
-            **{f'{name}_score': results[name]['test_score'] for name in results},
-            **{f'{name}_cv_scores': results[name]['cv_scores'] for name in results},
-            **{f'{name}_all_fold_predictions': results[name]['fold_predictions'] for name in results},
         }
 
     def _train_single_model(self, X_train, y_train, X_test, y_test,
@@ -520,10 +520,14 @@ class ModelTrainingPipeline:
         """
         Train a single model variant via Bayesian hyperparameter search.
 
+        The inner CV (``self.cv_inner``) is used by ``BayesSearchCV`` for
+        hyperparameter tuning. The outer test set (X_test, y_test) is only
+        used for final evaluation — never seen during tuning.
+
         Args:
-            X_train, y_train: Training data.
-            X_test, y_test: Test data.
-            groups: Group labels for grouped CV.
+            X_train, y_train: Training data (outer fold).
+            X_test, y_test: Test data (outer fold — truly unseen).
+            groups: Group labels for inner CV.
             cat_vars: Categorical feature list (CatBoost only).
 
         Returns:
@@ -533,52 +537,47 @@ class ModelTrainingPipeline:
             X_train, y_train, X_test, y_test,
             self.param_space, model=self.model_name,
             seed_rf=self.seed_rf, seed_bayes=self.seed_bayes,
-            n_iter=self.n_iter, cv=self.cv_group_train,
+            n_iter=self.n_iter, cv=self.cv_inner,
             groups=groups, cat_vars=cat_vars, n_jobs=self.n_jobs,
             gpu=self.gpu,
         )
 
-    def _collect_cv_results(self, bayes_search, X_train, y_train,
-                            groups, test_score):
+    def _evaluate_on_test(self, bayes_search, X_test, y_test):
         """
-        Collect cross-validation predictions and scores for a trained model.
+        Evaluate a trained model on the outer fold's held-out test set.
+
+        This provides an **unbiased** evaluation — the test set was never
+        seen during hyperparameter tuning (inner CV) or model training.
 
         Args:
             bayes_search: Fitted BayesSearchCV object.
-            X_train, y_train: Training data.
-            groups: Group labels for CV.
-            test_score: Test set accuracy.
+            X_test: Outer fold test features.
+            y_test: Outer fold test labels.
 
         Returns:
-            dict: Contains 'fold_predictions', 'cv_scores', and 'test_score'.
+            dict with 'test_proba', 'test_auc', 'best_params', 'inner_cv_score'.
         """
-        # Use the pipeline's n_jobs setting
-        n_jobs = self.n_jobs
-        fold_predictions = cross_val_predict(
-            bayes_search.best_estimator_, X_train, y_train,
-            groups=groups, cv=self.cv_group_train,
-            method='predict_proba', n_jobs=n_jobs,
-        )
-        cv_scores = cross_val_score(
-            bayes_search.best_estimator_, X_train, y_train,
-            groups=groups, cv=self.cv_group_train, n_jobs=n_jobs,
-        )
+        y_proba = bayes_search.best_estimator_.predict_proba(X_test)[:, 1]
+        test_auc = roc_auc_score(y_test, y_proba)
+        logger.info(f"  Outer test AUC: {test_auc:.4f} "
+                    f"(inner best: {bayes_search.best_score_:.4f})")
         return {
-            'fold_predictions': fold_predictions,
-            'cv_scores': cv_scores,
-            'test_score': test_score,
+            'test_proba': y_proba,
+            'test_auc': test_auc,
+            'best_params': dict(bayes_search.best_params_),
+            'inner_cv_score': bayes_search.best_score_,
         }
 
-    def _plot_roc(self, ax, model_data, results, y_true, plot_type='cv'):
+    def _plot_roc(self, ax, model_data, results, y_true, plot_type='test'):
         """
         Plot ROC curves for all model variants on a single axes.
 
         Args:
             ax: Matplotlib axes.
             model_data (dict): Maps model name → (bayes_search, X_train, X_test, X_all_test).
-            results (dict): Maps model name → CV results dict.
+            results (dict): Maps model name → evaluation results dict.
             y_true: True labels for the plot.
-            plot_type (str): 'cv' for CV predictions, 'test' or 'all_test' for estimator-based.
+            plot_type (str): 'test' or 'all_test'.
         """
         model_names = list(model_data.keys())
         last_model = model_names[-1]
@@ -589,10 +588,8 @@ class ModelTrainingPipeline:
             display_name = name.upper().replace('_', '+')
             is_last = (name == last_model)
 
-            if plot_type == 'cv':
-                y_score = results[name]['fold_predictions'][:, 1]
-            elif plot_type == 'test':
-                y_score = bs.best_estimator_.predict_proba(X_test)[:, 1]
+            if plot_type == 'test':
+                y_score = results[name]['test_proba']
             elif plot_type == 'all_test':
                 y_score = bs.best_estimator_.predict_proba(X_all_test)[:, 1]
 
@@ -610,59 +607,82 @@ class ModelTrainingPipeline:
 
     def _plot_all_roc(self, fold_k, model_data, results,
                       y_train, y_test, y_all_test):
-        """Generate all three ROC curve plots (CV, test, augmented test)."""
-        prefix = f'plots/{self.model_name}_split_{fold_k}_seed_{self.seed_split}_seedcv_{self.seed_cv}'
-
-        # CV predictions ROC
-        fig, ax = plt.subplots(figsize=(8, 6))
-        self._plot_roc(ax, model_data, results, y_train, plot_type='cv')
-        ax.set_title('ROC Curve (CV Test Sets)')
-        fig.savefig(f'{prefix}_cvroc.pdf', bbox_inches='tight')
-        plt.close(fig)
+        """Generate ROC curve plots for a single outer fold (test + augmented test)."""
+        prefix = f'plots/{self.model_name}_fold_{fold_k}_seed_{self.seed_split}'
 
         # Held-out test ROC
         fig, ax = plt.subplots(figsize=(8, 6))
         self._plot_roc(ax, model_data, results, y_test, plot_type='test')
-        ax.set_title('ROC Curve (Test Set)')
+        ax.set_title(f'ROC Curve (Outer Fold {fold_k} — Test Set)')
         fig.savefig(f'{prefix}_testroc.pdf', bbox_inches='tight')
         plt.close(fig)
 
         # Augmented test ROC
         fig, ax = plt.subplots(figsize=(8, 6))
         self._plot_roc(ax, model_data, results, y_all_test, plot_type='all_test')
-        ax.set_title('ROC Curve (Test Set Augmented)')
+        ax.set_title(f'ROC Curve (Outer Fold {fold_k} — Augmented Test Set)')
         fig.savefig(f'{prefix}_alltestroc.pdf', bbox_inches='tight')
         plt.close(fig)
 
-    def _plot_score_boxplot(self, fold_k, results):
-        """Generate a boxplot comparing CV scores across model variants."""
-        prefix = f'plots/{self.model_name}_split_{fold_k}_seed_{self.seed_split}_seedcv_{self.seed_cv}'
+    def _aggregate_results(self, all_fold_results):
+        """
+        Aggregate test AUCs across all outer folds and generate summary plots.
 
-        scores_data = [
-            {'model': name, 'scores': results[name]['cv_scores']}
-            for name in results
-        ]
-        test_data = [
-            {'model': name, 'scores': results[name]['test_score']}
-            for name in results
-        ]
+        Reports mean ± std per model and creates:
+          - A boxplot comparing test AUC distributions across models
+          - A summary ROC plot (mean performance)
+        """
+        model_names = ['libra', 'biom', 'mrf', 'biom_mrf', 'biom_rmrf', 'biom_smrf']
 
-        scores_df = pd.DataFrame(scores_data).explode('scores').reset_index(drop=True)
-        test_df = pd.DataFrame(test_data)
+        # Collect per-fold AUCs
+        summary = {}
+        for name in model_names:
+            aucs = [fold['results'][name]['test_auc'] for fold in all_fold_results]
+            inner_scores = [fold['results'][name]['inner_cv_score'] for fold in all_fold_results]
+            summary[name] = {
+                'test_aucs': aucs,
+                'inner_scores': inner_scores,
+                'mean_auc': np.mean(aucs),
+                'std_auc': np.std(aucs),
+            }
+            logger.info(
+                f"{name:>12s}: test AUC = {np.mean(aucs):.3f} ± {np.std(aucs):.3f}  "
+                f"(inner CV: {np.mean(inner_scores):.3f} ± {np.std(inner_scores):.3f})"
+            )
 
-        fig, ax = plt.subplots(figsize=(12, 8))
-        sns.boxplot(data=scores_df, x='model', y='scores',
+        # Boxplot of test AUCs across folds
+        prefix = f'plots/{self.model_name}_nested_seed_{self.seed_split}'
+        auc_rows = []
+        for name in model_names:
+            for auc in summary[name]['test_aucs']:
+                auc_rows.append({'model': name.upper().replace('_', '+'), 'AUC': auc})
+
+        auc_df = pd.DataFrame(auc_rows)
+        fig, ax = plt.subplots(figsize=(12, 6))
+        sns.boxplot(data=auc_df, x='model', y='AUC',
                     color='.8', linecolor='#137', linewidth=0.75, ax=ax)
-        sns.stripplot(data=scores_df, x='model', y='scores', ax=ax, color='gray')
-        sns.stripplot(data=test_df, x='model', y='scores', ax=ax, color='red')
-        fig.savefig(f'{prefix}_boxplot.pdf', bbox_inches='tight')
+        sns.stripplot(data=auc_df, x='model', y='AUC', ax=ax, size=8, jitter=False)
+        ax.set_title(f'Nested CV — Test AUC per Outer Fold ({self.n_splits}-fold)')
+        ax.set_ylabel('Test AUC (outer fold)')
+        ax.set_xlabel('')
+        fig.savefig(f'{prefix}_nested_boxplot.pdf', bbox_inches='tight')
         plt.close(fig)
 
-    def _save_results(self, fold_k, results_dict):
-        """Save results to a joblib file."""
-        path = f'results/{self.model_name}_split_{fold_k}_seed_{self.seed_split}_seedcv_{self.seed_cv}_results.joblib'
+        self._summary = summary
+
+    def _save_results(self, all_fold_results):
+        """Save all fold results and aggregated summary to a joblib file."""
+        path = (f'results/{self.model_name}_nested_seed_{self.seed_split}'
+                f'_seedcv_{self.seed_cv}_results.joblib')
+        results_dict = {
+            'n_folds': self.n_splits,
+            'model_name': self.model_name,
+            'seed_split': self.seed_split,
+            'summary': getattr(self, '_summary', {}),
+            'folds': all_fold_results,
+        }
         joblib.dump(results_dict, path)
-        logger.info(f"Results saved to {path}")
+        logger.info(f"All fold results saved to {path}")
 
 
 # =============================================================================

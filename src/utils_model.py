@@ -1020,7 +1020,7 @@ def search_rules(df1_train, df2_train, y_train, df1_test, df2_test, y_test,
     ])
 
     bayes_search = BayesSearchCV(
-        pipeline, param_grid, n_iter=n_iter, cv=cv,
+        pipeline, param_grid, n_iter=n_iter, cv=cv, scoring='roc_auc',
         n_jobs=n_jobs, verbose=0, random_state=seed_bayes,
     )
 
