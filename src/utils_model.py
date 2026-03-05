@@ -74,7 +74,7 @@ class _CatBoostWrapper(BaseEstimator):
     def __init__(self, cat_features=None, verbose=0, random_state=None,
                  iterations=None, learning_rate=None, depth=None,
                  l2_leaf_reg=None, bagging_temperature=None,
-                 border_count=None):
+                 border_count=None, task_type=None):
         self.cat_features = cat_features
         self.verbose = verbose
         self.random_state = random_state
@@ -84,6 +84,7 @@ class _CatBoostWrapper(BaseEstimator):
         self.l2_leaf_reg = l2_leaf_reg
         self.bagging_temperature = bagging_temperature
         self.border_count = border_count
+        self.task_type = task_type
 
     def _build_catboost(self):
         """Create a CatBoostClassifier from current parameter values."""
@@ -97,6 +98,7 @@ class _CatBoostWrapper(BaseEstimator):
             'l2_leaf_reg': self.l2_leaf_reg,
             'bagging_temperature': self.bagging_temperature,
             'border_count': self.border_count,
+            'task_type': self.task_type,
         }
         # Only pass non-None params to CatBoost
         return CatBoostClassifier(**{k: v for k, v in params.items() if v is not None})
@@ -167,6 +169,7 @@ def create_model(model_name, seed=0, cat_vars=None):
             verbose=0,
             random_state=seed,
             cat_features=cat_vars,
+            task_type='GPU',
         )
     else:
         raise ValueError(
