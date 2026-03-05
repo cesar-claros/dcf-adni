@@ -156,16 +156,22 @@ class ModelTrainingPipeline:
         n_subset (int): Number of top DCG features for sMRF.
     """
 
-    def __init__(self, model_name, seed_split, config_path=None):
+    def __init__(self, model_name, seed_split, config_path=None,
+                 gpu=False, n_jobs=-1):
         """
         Args:
             model_name (str): One of ``'catboost'``, ``'xgboost'``, ``'rf'``.
             seed_split (int): Random seed for the outer StratifiedGroupKFold.
             config_path (str or Path or None): Path to YAML config file.
                 Defaults to ``configs/model_training.yaml``.
+            gpu (bool): Enable GPU training for CatBoost.
+            n_jobs (int): Number of parallel jobs for BayesSearchCV and CV
+                functions. Use 1 when GPU is enabled to avoid CUDA OOM.
         """
         self.model_name = model_name
         self.seed_split = seed_split
+        self.gpu = gpu
+        self.n_jobs = n_jobs
 
         # Load configuration from YAML
         cfg = _load_config(config_path)
@@ -402,6 +408,7 @@ class ModelTrainingPipeline:
             seed_rf=self.seed_rf, seed_bayes=self.seed_bayes,
             n_iter=self.n_iter, cv=self.cv_group_train,
             groups=groups_train, cat_vars=categorical_biom,
+            n_jobs=self.n_jobs, gpu=self.gpu,
         )
         X_biom_rmrf_train = pd.merge(
             X_biom_train, lm_train.iloc[:, :self.n_rules],
@@ -422,7 +429,7 @@ class ModelTrainingPipeline:
         biom_rmrf_cv = cross_validate(
             biom_rmrf_bs.best_estimator_, X_biom_rmrf_train, y_train,
             groups=groups_train, cv=self.cv_group_train,
-            n_jobs=1 if self.model_name == 'catboost' else -1,
+            n_jobs=self.n_jobs,
             return_train_score=True, return_estimator=True, return_indices=True,
         )
 
@@ -439,6 +446,7 @@ class ModelTrainingPipeline:
             seed_rf=self.seed_rf, seed_bayes=self.seed_bayes,
             n_iter=self.n_iter, cv=self.cv_group_train,
             groups=groups_train, cat_vars=categorical_biom,
+            n_jobs=self.n_jobs, gpu=self.gpu,
         )
         X_biom_smrf_train = pd.merge(
             X_biom_train, X_mrf_train[top_vars],
@@ -511,7 +519,8 @@ class ModelTrainingPipeline:
             self.param_space, model=self.model_name,
             seed_rf=self.seed_rf, seed_bayes=self.seed_bayes,
             n_iter=self.n_iter, cv=self.cv_group_train,
-            groups=groups, cat_vars=cat_vars,
+            groups=groups, cat_vars=cat_vars, n_jobs=self.n_jobs,
+            gpu=self.gpu,
         )
 
     def _collect_cv_results(self, bayes_search, X_train, y_train,
@@ -528,8 +537,8 @@ class ModelTrainingPipeline:
         Returns:
             dict: Contains 'fold_predictions', 'cv_scores', and 'test_score'.
         """
-        # Use n_jobs=1 for CatBoost GPU to avoid OOM from parallel CUDA processes
-        n_jobs = 1 if self.model_name == 'catboost' else -1
+        # Use the pipeline's n_jobs setting
+        n_jobs = self.n_jobs
         fold_predictions = cross_val_predict(
             bayes_search.best_estimator_, X_train, y_train,
             groups=groups, cv=self.cv_group_train,
@@ -664,10 +673,24 @@ if __name__ == "__main__":
         choices=['catboost', 'xgboost', 'rf'],
         help="Model type to train",
     )
+    parser.add_argument(
+        '--gpu', action='store_true', default=False,
+        help="Enable GPU training for CatBoost (requires NVIDIA CUDA)",
+    )
+    parser.add_argument(
+        '--n_jobs', type=int, default=None,
+        help="Number of parallel jobs for BayesSearchCV and CV functions. "
+             "Defaults to 1 when --gpu is set, -1 otherwise",
+    )
     args = parser.parse_args()
+
+    # Default n_jobs: 1 for GPU (avoid CUDA OOM), -1 for CPU (full parallelism)
+    n_jobs = args.n_jobs if args.n_jobs is not None else (1 if args.gpu else -1)
 
     pipeline = ModelTrainingPipeline(
         model_name=args.model_name,
         seed_split=args.seed_split,
+        gpu=args.gpu,
+        n_jobs=n_jobs,
     )
     pipeline.run()

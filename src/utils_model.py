@@ -132,7 +132,7 @@ class _CatBoostWrapper(BaseEstimator):
             )
 
 
-def create_model(model_name, seed=0, cat_vars=None):
+def create_model(model_name, seed=0, cat_vars=None, gpu=False):
     """
     Factory function that creates a configured classifier instance.
 
@@ -143,6 +143,7 @@ def create_model(model_name, seed=0, cat_vars=None):
         model_name (str): One of ``'rf'``, ``'xgboost'``, or ``'catboost'``.
         seed (int): Random seed for reproducibility.
         cat_vars (list[str] or None): Categorical feature names (CatBoost only).
+        gpu (bool): Enable GPU training for CatBoost (requires NVIDIA CUDA).
 
     Returns:
         A scikit-learn-compatible classifier instance.
@@ -169,7 +170,7 @@ def create_model(model_name, seed=0, cat_vars=None):
             verbose=0,
             random_state=seed,
             cat_features=cat_vars,
-            task_type='GPU',
+            task_type='GPU' if gpu else None,
         )
     else:
         raise ValueError(
@@ -893,7 +894,8 @@ class FeatureImportanceScorer:
 
 def train_model(X_train, y_train, X_test, y_test, param_space,
                 model='rf', seed_rf=0, seed_bayes=0, cv=10,
-                n_iter=100, groups=None, cat_vars=None):
+                n_iter=100, groups=None, cat_vars=None, n_jobs=-1,
+                gpu=False):
     """
     Perform Bayesian hyperparameter search and evaluate on a test fold.
 
@@ -911,15 +913,15 @@ def train_model(X_train, y_train, X_test, y_test, param_space,
         n_iter (int): Number of Bayesian search iterations.
         groups (array-like or None): Group labels for grouped cross-validation.
         cat_vars (list[str] or None): Categorical feature names (CatBoost).
+        n_jobs (int): Number of parallel jobs for BayesSearchCV.
+            Use 1 for CatBoost GPU to avoid OOM.
 
     Returns:
         tuple: ``(bayes_search, test_score)``
             - ``bayes_search``: Fitted ``BayesSearchCV`` object.
             - ``test_score``: Accuracy on the test set.
     """
-    m = create_model(model, seed=seed_rf, cat_vars=cat_vars)
-    # Use n_jobs=1 for GPU models to avoid OOM from parallel CUDA processes
-    n_jobs = 1 if model == 'catboost' else -1
+    m = create_model(model, seed=seed_rf, cat_vars=cat_vars, gpu=gpu)
     bayes_search = BayesSearchCV(
         m, param_space, n_iter=n_iter, cv=cv,
         n_jobs=n_jobs, verbose=0, random_state=seed_bayes,
@@ -938,7 +940,8 @@ def train_model(X_train, y_train, X_test, y_test, param_space,
 
 def search_rules(df1_train, df2_train, y_train, df1_test, df2_test, y_test,
                  param_space, model='rf', seed_rf=0, seed_bayes=0,
-                 cv=10, n_iter=100, groups=None, cat_vars=None):
+                 cv=10, n_iter=100, groups=None, cat_vars=None, n_jobs=-1,
+                 gpu=False):
     """
     Train a model with RFE-based feature selection on a second feature set.
 
@@ -965,6 +968,7 @@ def search_rules(df1_train, df2_train, y_train, df1_test, df2_test, y_test,
         n_iter (int): Bayesian search iterations.
         groups (array-like or None): Group labels for CV.
         cat_vars (list[str] or None): Categorical features.
+        n_jobs (int): Number of parallel jobs for BayesSearchCV.
 
     Returns:
         tuple: ``(bayes_search, test_score)``
@@ -989,14 +993,12 @@ def search_rules(df1_train, df2_train, y_train, df1_test, df2_test, y_test,
     }
     param_grid.update({f'model__{k}': param_space[k] for k in param_space})
 
-    m = create_model(model, seed=seed_rf, cat_vars=cat_vars)
+    m = create_model(model, seed=seed_rf, cat_vars=cat_vars, gpu=gpu)
     pipeline = Pipeline([
         ('preprocessing', preprocessor),
         ('model', m),
     ])
 
-    # Use n_jobs=1 for GPU models to avoid OOM from parallel CUDA processes
-    n_jobs = 1 if model == 'catboost' else -1
     bayes_search = BayesSearchCV(
         pipeline, param_grid, n_iter=n_iter, cv=cv,
         n_jobs=n_jobs, verbose=0, random_state=seed_bayes,
