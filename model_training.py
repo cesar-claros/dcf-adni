@@ -590,23 +590,17 @@ class ModelTrainingPipeline:
             is_last = (name == last_model)
 
             if plot_type == 'cv':
-                RocCurveDisplay.from_predictions(
-                    y_true, results[name]['fold_predictions'][:, 1],
-                    ax=ax, name=display_name, color=color,
-                    plot_chance_level=is_last,
-                )
+                y_score = results[name]['fold_predictions'][:, 1]
             elif plot_type == 'test':
-                RocCurveDisplay.from_estimator(
-                    bs.best_estimator_, X_test, y_true,
-                    ax=ax, name=display_name, color=color,
-                    plot_chance_level=is_last,
-                )
+                y_score = bs.best_estimator_.predict_proba(X_test)[:, 1]
             elif plot_type == 'all_test':
-                RocCurveDisplay.from_estimator(
-                    bs.best_estimator_, X_all_test, y_true,
-                    ax=ax, name=display_name, color=color,
-                    plot_chance_level=is_last,
-                )
+                y_score = bs.best_estimator_.predict_proba(X_all_test)[:, 1]
+
+            RocCurveDisplay.from_predictions(
+                y_true, y_score,
+                ax=ax, name=display_name, color=color,
+                plot_chance_level=is_last,
+            )
 
         ax.minorticks_on()
         ax.grid(which='both')
