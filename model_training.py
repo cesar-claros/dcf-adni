@@ -447,7 +447,7 @@ class ModelTrainingPipeline:
 
         # 6g. BIOM+sMRF model (biomarker + top DCG-selected MRF features)
         pbar.set_description('Training BIOM+sMRF')
-        next(iter(pbar))
+        pbar.update(1)
         top_vars = dcg_importance.index[:self.n_subset]
         repeated_smrf = list(set(top_vars).intersection(set(X_biom_train.columns)))
         top_vars = top_vars.drop(repeated_smrf)
