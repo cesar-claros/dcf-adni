@@ -182,6 +182,8 @@ def create_model(model_name, seed=0, cat_vars=None, gpu=False):
             objective='binary:logistic',
             eval_metric='logloss',
             use_label_encoder=False,
+            enable_categorical=True,
+            tree_method='hist',
             random_state=seed,
         )
     elif model_name == 'catboost':
