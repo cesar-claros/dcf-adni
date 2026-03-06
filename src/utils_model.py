@@ -777,11 +777,16 @@ class FeatureImportanceScorer:
     def compute_leaf_correlation(model, X_train, y_train, X_test, y_test,
                                  X_all_test, y_all_test, model_type='catboost'):
         """
-        Compute leaf membership matrices and rank leaves by correlation with target.
+        Compute leaf membership matrices and rank leaves by combined score.
 
         Each leaf in each tree becomes a binary feature indicating whether a
-        sample falls into that leaf. Leaves are ranked by Cramér's V with the
-        target variable.
+        sample falls into that leaf. Leaves are ranked by a **combined score**:
+
+            ``combined_score = |Cramér's V correlation| × normalized_leaf_weight``
+
+        This ensures top-ranked leaves are both strongly correlated with the
+        target **and** have large leaf weights (indicating the model allocated
+        significant weight to that decision region).
 
         Args:
             model: Fitted tree-based classifier.
@@ -792,8 +797,10 @@ class FeatureImportanceScorer:
         Returns:
             tuple: ``(lm_train, lm_test, lm_all_test, correlation_df)``
                 - ``lm_*``: Binary leaf membership DataFrames, columns ordered
-                  by descending correlation.
-                - ``correlation_df``: DataFrame with columns ``['leaf', 'correlation_target']``.
+                  by descending combined score.
+                - ``correlation_df``: DataFrame with columns ``['leaf',
+                  'correlation_target', 'leaf_weight', 'norm_weight',
+                  'combined_score']``.
         """
         if model_type == 'rf':
             n_trees = len(model.estimators_)
@@ -827,11 +834,46 @@ class FeatureImportanceScorer:
         lm_all_test = leaf_membership_df.loc[y_all_test.index]
         lm_test = lm_all_test.loc[y_test.index]
 
-        # Rank leaves by Cramér's V with target
-        correlation_df = pd.DataFrame([
-            {'leaf': col, 'correlation_target': cramers_v(lm_train[col], y_train)}
+        # Compute Cramér's V correlation with target for each leaf
+        correlations = {
+            col: cramers_v(lm_train[col], y_train)
             for col in lm_train.columns
-        ]).sort_values(by='correlation_target', ascending=False)
+        }
+
+        # Extract leaf weights from the model
+        leaf_weights = {}
+        if model_type == 'catboost':
+            raw_weights = model.get_leaf_weights()
+            # raw_weights is a list of arrays, one per tree
+            for tree_idx, tree_w in enumerate(raw_weights):
+                for leaf_idx, w in enumerate(tree_w):
+                    leaf_weights[f'tree_{tree_idx}-leaf_{leaf_idx}'] = abs(w)
+        else:
+            # For RF/XGBoost, use sample count per leaf as proxy weight
+            for col in lm_train.columns:
+                leaf_weights[col] = lm_train[col].sum()
+
+        # Build combined ranking: |correlation| × normalized_weight
+        # Normalize weights to [0, 1] across all leaves
+        all_weights = np.array([leaf_weights.get(col, 0.0) for col in lm_train.columns])
+        max_w = all_weights.max() if all_weights.max() > 0 else 1.0
+        norm_weights = all_weights / max_w
+
+        rows = []
+        for i, col in enumerate(lm_train.columns):
+            corr = correlations[col]
+            w = norm_weights[i]
+            rows.append({
+                'leaf': col,
+                'correlation_target': corr,
+                'leaf_weight': leaf_weights.get(col, 0.0),
+                'norm_weight': w,
+                'combined_score': abs(corr) * w,
+            })
+
+        correlation_df = pd.DataFrame(rows).sort_values(
+            by='combined_score', ascending=False
+        )
 
         ordered_columns = correlation_df['leaf']
         lm_train = lm_train[ordered_columns]
