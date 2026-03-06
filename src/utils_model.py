@@ -1041,7 +1041,7 @@ def train_model(X_train, y_train, X_test, y_test,
     def objective(trial: Trial):
         params = _suggest_params(trial, model)
         splits = list(cv.split(X_train, y_train_arr, groups))
-        scores = Parallel(n_jobs=n_jobs)(
+        scores = Parallel(n_jobs=n_jobs, prefer='threads')(
             delayed(_fit_and_score_fold)(train_idx, val_idx, params)
             for train_idx, val_idx in splits
         )
