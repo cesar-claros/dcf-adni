@@ -1041,7 +1041,7 @@ def train_model(X_train, y_train, X_test, y_test,
     def objective(trial: Trial):
         params = _suggest_params(trial, model)
         splits = list(cv.split(X_train, y_train_arr, groups))
-        scores = Parallel(n_jobs=n_jobs, prefer='threads')(
+        scores = Parallel(n_jobs=cv.n_splits if n_jobs==-1 else n_jobs, prefer='threads')(
             delayed(_fit_and_score_fold)(train_idx, val_idx, params)
             for train_idx, val_idx in splits
         )
@@ -1056,7 +1056,7 @@ def train_model(X_train, y_train, X_test, y_test,
         sampler=sampler)
     study.optimize(
         objective, n_trials=n_iter,
-        n_jobs=1, # if n_jobs=-1, divide the number cpus by the number of folds to avoid OOM
+        n_jobs=os.cpu_count()//cv.n_splits if n_jobs==-1 else n_jobs, # if n_jobs=-1, divide the number cpus by the number of folds to avoid OOM
         show_progress_bar=True,
     )
 
