@@ -49,6 +49,11 @@ from tqdm import tqdm
 from xgboost import XGBClassifier
 from catboost import CatBoostClassifier
 from optbinning import BinningProcess
+from optuna.trial import Trial
+from optuna.storages import JournalStorage
+from optuna.storages.journal import JournalFileBackend
+import threading
+
 
 logger = logging.getLogger(__name__)
 
@@ -1023,7 +1028,7 @@ def train_model(X_train, y_train, X_test, y_test,
     """
     y_train_arr = y_train.values.squeeze()
 
-    def objective(trial):
+    def objective(trial: Trial):
         params = _suggest_params(trial, model)
         scores = []
         for train_idx, val_idx in cv.split(X_train, y_train_arr, groups):
@@ -1037,7 +1042,10 @@ def train_model(X_train, y_train, X_test, y_test,
     # Suppress Optuna's internal logging, use tqdm instead
     optuna.logging.set_verbosity(optuna.logging.WARNING)
     sampler = TPESampler(seed=seed_bayes)
-    study = optuna.create_study(direction='maximize', sampler=sampler)
+    study = optuna.create_study(
+        direction='maximize',
+        storage=JournalStorage(JournalFileBackend(file_path="./journal.log")),
+        sampler=sampler)
     study.optimize(
         objective, n_trials=n_iter,
         n_jobs=n_jobs,
