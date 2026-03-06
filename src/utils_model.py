@@ -1055,7 +1055,7 @@ def train_model(X_train, y_train, X_test, y_test,
         sampler=sampler)
     study.optimize(
         objective, n_trials=n_iter,
-        n_jobs=1,
+        n_jobs=n_jobs,
         show_progress_bar=True,
     )
 
