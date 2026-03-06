@@ -59,7 +59,7 @@ from sklearn.model_selection import (
     StratifiedGroupKFold,
     cross_validate,
 )
-from skopt.space import Real, Integer
+
 
 from src.utils_model import (
     WoETransformer,
@@ -98,34 +98,6 @@ def _load_config(config_path=None):
         return yaml.safe_load(f)
 
 
-# Model hyperparameter search spaces (skopt types are not YAML-serializable)
-PARAM_SPACES = {
-    'catboost': {
-        'iterations':          Integer(100, 1000),
-        'learning_rate':       Real(1e-3, 1.0, 'log-uniform'),
-        'depth':               Integer(3, 10),
-        'l2_leaf_reg':         Real(1, 10, 'uniform'),
-        'bagging_temperature': Real(0.0, 1.0, 'uniform'),
-        'border_count':        Integer(32, 255),
-    },
-    'xgboost': {
-        'n_estimators':     Integer(100, 1000),
-        'learning_rate':    Real(0.01, 0.3, 'log-uniform'),
-        'max_depth':        Integer(4, 20),
-        'subsample':        Real(0.5, 1.0, 'uniform'),
-        'colsample_bytree': Real(0.5, 1.0, 'uniform'),
-        'gamma':            Real(0.0, 5.0, 'uniform'),
-        'reg_alpha':        Real(0.0, 10.0, 'uniform'),
-        'reg_lambda':       Real(1.0, 10.0, 'uniform'),
-    },
-    'rf': {
-        'n_estimators':      Integer(100, 300),
-        'max_depth':         Integer(4, 20),
-        'min_samples_split': Integer(5, 20),
-        'min_samples_leaf':  Integer(5, 20),
-        'max_features':      ['sqrt', 'log2'],
-    },
-}
 
 
 # =============================================================================
@@ -190,9 +162,8 @@ class ModelTrainingPipeline:
         self.categorical_mrf = cfg['categorical_mrf']
         self.model_colors = cfg.get('plot_colors', {})
 
-        if model_name not in PARAM_SPACES:
-            raise ValueError(f"Unknown model '{model_name}'. Choose from: {list(PARAM_SPACES.keys())}")
-        self.param_space = PARAM_SPACES[model_name]
+        if model_name not in ('catboost', 'xgboost', 'rf'):
+            raise ValueError(f"Unknown model '{model_name}'. Choose from: catboost, xgboost, rf")
 
         # Inner CV splitter (used by BayesSearchCV for hyperparameter tuning)
         self.cv_inner = StratifiedGroupKFold(
@@ -344,52 +315,52 @@ class ModelTrainingPipeline:
         # 6a. LIBRA model
         pbar.set_description('Training LIBRA')
         pbar.update(1)
-        libra_bs, libra_score = self._train_single_model(
+        libra_study, libra_model = self._train_single_model(
             X_train=libra_train, y_train=y_train,
             X_test=libra_test, y_test=y_test,
             groups=groups_train, variant_seed=0,
         )
         results['libra'] = self._evaluate_on_test(
-            libra_bs, libra_test, y_test,
+            libra_study, libra_model, libra_test, y_test,
         )
 
         # 6b. BIOM+MRF model
         pbar.set_description('Training BIOM+MRF')
         pbar.update(1)
-        biom_mrf_bs, biom_mrf_score = self._train_single_model(
+        biom_mrf_study, biom_mrf_model = self._train_single_model(
             X_train=X_biom_mrf_train, y_train=y_train, 
             X_test=X_biom_mrf_test, y_test=y_test,
             groups=groups_train, cat_vars=cat_vars_biom_mrf,
             variant_seed=10,
         )
         results['biom_mrf'] = self._evaluate_on_test(
-            biom_mrf_bs, X_biom_mrf_test, y_test,
+            biom_mrf_study, biom_mrf_model, X_biom_mrf_test, y_test,
         )
 
         # 6c. BIOM model
         pbar.set_description('Training BIOM')
         pbar.update(1)
-        biom_bs, biom_score = self._train_single_model(
+        biom_study, biom_model = self._train_single_model(
             X_train=X_biom_train, y_train=y_train,
             X_test=X_biom_test, y_test=y_test,
             groups=groups_train, cat_vars=categorical_biom,
             variant_seed=20,
         )
         results['biom'] = self._evaluate_on_test(
-            biom_bs, X_biom_test, y_test,
+            biom_study, biom_model, X_biom_test, y_test,
         )
 
         # 6d. MRF model
         pbar.set_description('Training MRF')
         pbar.update(1)
-        mrf_bs, mrf_score = self._train_single_model(
+        mrf_study, mrf_model = self._train_single_model(
             X_train=X_mrf_train, y_train=y_train,
             X_test=X_mrf_test, y_test=y_test,
             groups=groups_train, cat_vars=categorical_mrf,
             variant_seed=30,
         )
         results['mrf'] = self._evaluate_on_test(
-            mrf_bs, X_mrf_test, y_test,
+            mrf_study, mrf_model, X_mrf_test, y_test,
         )
 
         # 6e. Extract tree rules from MRF model for rMRF/sMRF
@@ -399,19 +370,19 @@ class ModelTrainingPipeline:
             data=X_mrf_train, label=y_train,
             cat_features=categorical_mrf,
         )
-        extractor = TreeRuleExtractor(mrf_bs.best_estimator_, model_type='catboost')
+        extractor = TreeRuleExtractor(mrf_model, model_type='catboost')
         all_trees, all_features, unique_trees, unique_features = \
             extractor.extract_all_rules(X_mrf_train, train_pool=mrf_train_pool)
 
         lm_train, lm_test, lm_all_test, correlation = \
             FeatureImportanceScorer.compute_leaf_correlation(
-                mrf_bs.best_estimator_,
+                mrf_model,
                 X_mrf_train, y_train,
                 X_mrf_test, y_test,
                 X_mrf_all_test, y_all_test,
                 model_type='catboost',
             )
-        leaf_counts = mrf_bs.best_estimator_.get_tree_leaf_counts()
+        leaf_counts = mrf_model.get_tree_leaf_counts()
         dcg_importance = FeatureImportanceScorer.dcg_score(
             all_features, correlation, unique_features, leaf_counts,
         )
@@ -431,17 +402,17 @@ class ModelTrainingPipeline:
             X_biom_all_test, lm_all_test.iloc[:, :self.n_rules],
             left_index=True, right_index=True,
         )
-        biom_rmrf_bs, biom_rmrf_score = self._train_single_model(
+        biom_rmrf_study, biom_rmrf_model = self._train_single_model(
             X_train=X_biom_rmrf_train, y_train=y_train,
             X_test=X_biom_rmrf_test, y_test=y_test,
             groups=groups_train, cat_vars=categorical_biom,
             variant_seed=40,
         )
         results['biom_rmrf'] = self._evaluate_on_test(
-            biom_rmrf_bs, X_biom_rmrf_test, y_test,
+            biom_rmrf_study, biom_rmrf_model, X_biom_rmrf_test, y_test,
         )
         biom_rmrf_cv = cross_validate(
-            biom_rmrf_bs.best_estimator_, X_biom_rmrf_train, y_train,
+            biom_rmrf_model, X_biom_rmrf_train, y_train,
             groups=groups_train, cv=self.cv_inner,
             n_jobs=self.n_jobs,
             return_train_score=True, return_estimator=True, return_indices=True,
@@ -466,14 +437,14 @@ class ModelTrainingPipeline:
             X_biom_all_test, X_mrf_all_test[top_vars],
             left_index=True, right_index=True,
         )
-        biom_smrf_bs, biom_smrf_score = self._train_single_model(
+        biom_smrf_study, biom_smrf_model = self._train_single_model(
             X_train=X_biom_smrf_train, y_train=y_train,
             X_test=X_biom_smrf_test, y_test=y_test,
             groups=groups_train, cat_vars=categorical_biom,
             variant_seed=50,
         )
         results['biom_smrf'] = self._evaluate_on_test(
-            biom_smrf_bs, X_biom_smrf_test, y_test,
+            biom_smrf_study, biom_smrf_model, X_biom_smrf_test, y_test,
         )
 
         pbar.close()
@@ -481,12 +452,12 @@ class ModelTrainingPipeline:
         # ----- Step 7: Plot ROC curves -----
         logger.info("Generating ROC plots...")
         model_data = {
-            'libra':     (libra_bs, libra_train, libra_test, libra_all_test),
-            'biom':      (biom_bs, X_biom_train, X_biom_test, X_biom_all_test),
-            'mrf':       (mrf_bs, X_mrf_train, X_mrf_test, X_mrf_all_test),
-            'biom_mrf':  (biom_mrf_bs, X_biom_mrf_train, X_biom_mrf_test, X_biom_mrf_all_test),
-            'biom_rmrf': (biom_rmrf_bs, X_biom_rmrf_train, X_biom_rmrf_test, X_biom_rmrf_all_test),
-            'biom_smrf': (biom_smrf_bs, X_biom_smrf_train, X_biom_smrf_test, X_biom_smrf_all_test),
+            'libra':     (libra_model, libra_train, libra_test, libra_all_test),
+            'biom':      (biom_model, X_biom_train, X_biom_test, X_biom_all_test),
+            'mrf':       (mrf_model, X_mrf_train, X_mrf_test, X_mrf_all_test),
+            'biom_mrf':  (biom_mrf_model, X_biom_mrf_train, X_biom_mrf_test, X_biom_mrf_all_test),
+            'biom_rmrf': (biom_rmrf_model, X_biom_rmrf_train, X_biom_rmrf_test, X_biom_rmrf_all_test),
+            'biom_smrf': (biom_smrf_model, X_biom_smrf_train, X_biom_smrf_test, X_biom_smrf_all_test),
         }
         self._plot_all_roc(fold_k, model_data, results, y_train, y_test, y_all_test)
 
@@ -529,18 +500,18 @@ class ModelTrainingPipeline:
                 variant explores a different region of hyperparameter space.
 
         Returns:
-            tuple: ``(bayes_search, test_score)``
+            tuple: ``(study, best_model)``
         """
         return train_model(
             X_train, y_train, X_test, y_test,
-            self.param_space, model=self.model_name,
+            model=self.model_name,
             seed_rf=self.seed_rf, seed_bayes=self.seed_bayes + variant_seed,
             n_iter=self.n_iter, cv=self.cv_inner,
             groups=groups, cat_vars=cat_vars, n_jobs=self.n_jobs,
             gpu=self.gpu,
         )
 
-    def _evaluate_on_test(self, bayes_search, X_test, y_test):
+    def _evaluate_on_test(self, study, best_model, X_test, y_test):
         """
         Evaluate a trained model on the outer fold's held-out test set.
 
@@ -548,22 +519,23 @@ class ModelTrainingPipeline:
         seen during hyperparameter tuning (inner CV) or model training.
 
         Args:
-            bayes_search: Fitted BayesSearchCV object.
+            study: Completed Optuna study.
+            best_model: Best model refitted on full outer training set.
             X_test: Outer fold test features.
             y_test: Outer fold test labels.
 
         Returns:
             dict with 'test_proba', 'test_auc', 'best_params', 'inner_cv_score'.
         """
-        y_proba = bayes_search.best_estimator_.predict_proba(X_test)[:, 1]
+        y_proba = best_model.predict_proba(X_test)[:, 1]
         test_auc = roc_auc_score(y_test, y_proba)
         logger.info(f"  Outer test AUC: {test_auc:.4f} "
-                    f"(inner best: {bayes_search.best_score_:.4f})")
+                    f"(inner best: {study.best_value:.4f})")
         return {
             'test_proba': y_proba,
             'test_auc': test_auc,
-            'best_params': dict(bayes_search.best_params_),
-            'inner_cv_score': bayes_search.best_score_,
+            'best_params': study.best_params,
+            'inner_cv_score': study.best_value,
         }
 
     def _plot_roc(self, ax, model_data, results, y_true, plot_type='test'):
@@ -572,7 +544,7 @@ class ModelTrainingPipeline:
 
         Args:
             ax: Matplotlib axes.
-            model_data (dict): Maps model name → (bayes_search, X_train, X_test, X_all_test).
+            model_data (dict): Maps model name → (best_model, X_train, X_test, X_all_test).
             results (dict): Maps model name → evaluation results dict.
             y_true: True labels for the plot.
             plot_type (str): 'test' or 'all_test'.
@@ -581,7 +553,7 @@ class ModelTrainingPipeline:
         last_model = model_names[-1]
 
         for name in model_names:
-            bs, X_train, X_test, X_all_test = model_data[name]
+            best_model, X_train, X_test, X_all_test = model_data[name]
             color = self.model_colors.get(name, 'gray')
             display_name = name.upper().replace('_', '+')
             is_last = (name == last_model)
@@ -589,7 +561,7 @@ class ModelTrainingPipeline:
             if plot_type == 'test':
                 y_score = results[name]['test_proba']
             elif plot_type == 'all_test':
-                y_score = bs.best_estimator_.predict_proba(X_all_test)[:, 1]
+                y_score = best_model.predict_proba(X_all_test)[:, 1]
 
             RocCurveDisplay.from_predictions(
                 y_true, y_score,

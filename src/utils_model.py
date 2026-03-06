@@ -43,7 +43,8 @@ from sklearn.feature_selection import RFE
 from sklearn.metrics import roc_auc_score
 from sklearn.pipeline import Pipeline
 from sklearn import set_config
-from skopt import BayesSearchCV
+import optuna
+from optuna.samplers import TPESampler
 from tqdm import tqdm
 from xgboost import XGBClassifier
 from catboost import CatBoostClassifier
@@ -948,59 +949,111 @@ class FeatureImportanceScorer:
 # Training Functions
 # =============================================================================
 
-def train_model(X_train, y_train, X_test, y_test, param_space,
+def _suggest_params(trial, model):
+    """
+    Suggest hyperparameters for an Optuna trial based on model type.
+
+    Args:
+        trial: Optuna trial object.
+        model (str): ``'catboost'``, ``'xgboost'``, or ``'rf'``.
+
+    Returns:
+        dict: Suggested hyperparameters.
+    """
+    if model == 'catboost':
+        return {
+            'iterations':          trial.suggest_int('iterations', 100, 1000),
+            'learning_rate':       trial.suggest_float('learning_rate', 1e-3, 1.0, log=True),
+            'depth':               trial.suggest_int('depth', 3, 10),
+            'l2_leaf_reg':         trial.suggest_float('l2_leaf_reg', 1.0, 10.0),
+            'bagging_temperature': trial.suggest_float('bagging_temperature', 0.0, 1.0),
+            'border_count':        trial.suggest_int('border_count', 32, 255),
+        }
+    elif model == 'xgboost':
+        return {
+            'n_estimators':     trial.suggest_int('n_estimators', 100, 1000),
+            'learning_rate':    trial.suggest_float('learning_rate', 0.01, 0.3, log=True),
+            'max_depth':        trial.suggest_int('max_depth', 4, 20),
+            'subsample':        trial.suggest_float('subsample', 0.5, 1.0),
+            'colsample_bytree': trial.suggest_float('colsample_bytree', 0.5, 1.0),
+            'gamma':            trial.suggest_float('gamma', 0.0, 5.0),
+            'reg_alpha':        trial.suggest_float('reg_alpha', 0.0, 10.0),
+            'reg_lambda':       trial.suggest_float('reg_lambda', 1.0, 10.0),
+        }
+    elif model == 'rf':
+        return {
+            'n_estimators':      trial.suggest_int('n_estimators', 100, 300),
+            'max_depth':         trial.suggest_int('max_depth', 4, 20),
+            'min_samples_split': trial.suggest_int('min_samples_split', 5, 20),
+            'min_samples_leaf':  trial.suggest_int('min_samples_leaf', 5, 20),
+            'max_features':      trial.suggest_categorical('max_features', ['sqrt', 'log2']),
+        }
+    else:
+        raise ValueError(f"Unknown model type: {model}")
+
+
+def train_model(X_train, y_train, X_test, y_test,
                 model='rf', seed_rf=0, seed_bayes=0, cv=10,
                 n_iter=100, groups=None, cat_vars=None, n_jobs=-1,
                 gpu=False):
     """
-    Perform Bayesian hyperparameter search and evaluate on a test fold.
+    Perform hyperparameter optimization with Optuna and evaluate on a test fold.
 
-    Uses ``BayesSearchCV`` from scikit-optimize to find optimal hyperparameters
-    via cross-validation within the training set.
+    Uses an Optuna study with TPE sampler and manual K-fold cross-validation
+    inside the objective function. After the study completes, the best model
+    is refitted on the full training set.
 
     Args:
         X_train, y_train: Training features and target.
         X_test, y_test: Test features and target.
-        param_space (dict): Hyperparameter search space (e.g., ``Integer``, ``Real``).
         model (str): Model type — ``'rf'``, ``'xgboost'``, or ``'catboost'``.
         seed_rf (int): Seed for the model's random state.
-        seed_bayes (int): Seed for the Bayesian search.
+        seed_bayes (int): Seed for the Optuna TPE sampler.
         cv: Cross-validation splitter or integer.
-        n_iter (int): Number of Bayesian search iterations.
+        n_iter (int): Number of Optuna trials.
         groups (array-like or None): Group labels for grouped cross-validation.
         cat_vars (list[str] or None): Categorical feature names (CatBoost).
-        n_jobs (int): Number of parallel jobs for BayesSearchCV.
-            Use 1 for CatBoost GPU to avoid OOM.
+        n_jobs (int): Not used by Optuna (kept for API compatibility).
+        gpu (bool): Enable GPU training for CatBoost.
 
     Returns:
-        tuple: ``(bayes_search, test_score)``
-            - ``bayes_search``: Fitted ``BayesSearchCV`` object.
-            - ``test_score``: Accuracy on the test set.
+        tuple: ``(study, best_model)``
+            - ``study``: Completed Optuna study.
+            - ``best_model``: Best model refitted on the full training set.
     """
-    m = create_model(model, seed=seed_rf, cat_vars=cat_vars, gpu=gpu)
-    bayes_search = BayesSearchCV(
-        m, param_space, n_iter=n_iter, cv=cv, scoring='roc_auc',
-        n_jobs=n_jobs, verbose=0, random_state=seed_bayes,
+    y_train_arr = y_train.values.squeeze()
+
+    def objective(trial):
+        params = _suggest_params(trial, model)
+        scores = []
+        for train_idx, val_idx in cv.split(X_train, y_train_arr, groups):
+            m = create_model(model, seed=seed_rf, cat_vars=cat_vars, gpu=gpu)
+            m.set_params(**params)
+            m.fit(X_train.iloc[train_idx], y_train_arr[train_idx])
+            y_proba = m.predict_proba(X_train.iloc[val_idx])[:, 1]
+            scores.append(roc_auc_score(y_train_arr[val_idx], y_proba))
+        return np.mean(scores)
+
+    # Suppress Optuna's internal logging, use tqdm instead
+    optuna.logging.set_verbosity(optuna.logging.WARNING)
+    sampler = TPESampler(seed=seed_bayes)
+    study = optuna.create_study(direction='maximize', sampler=sampler)
+    study.optimize(
+        objective, n_trials=n_iter,
+        show_progress_bar=True,
     )
 
-    # tqdm progress bar for Bayesian search iterations
-    pbar = tqdm(total=n_iter, desc=f'BayesSearch ({model})', unit='iter')
+    logger.info(f"Best Parameters: {study.best_params}")
+    logger.info(f"Best Inner CV AUC: {study.best_value:.4f}")
 
-    def _on_step(result):
-        pbar.update(1)
-        pbar.set_postfix(best_score=f'{result.fun:.4f}' if hasattr(result, 'fun') else '...')
-        return True  # continue searching
+    # Refit best model on full training set
+    best_model = create_model(model, seed=seed_rf, cat_vars=cat_vars, gpu=gpu)
+    best_model.set_params(**study.best_params)
+    best_model.fit(X_train, y_train_arr)
 
-    if groups is None:
-        bayes_search.fit(X_train, y_train.values.squeeze(), callback=_on_step)
-    else:
-        bayes_search.fit(X=X_train, y=y_train.values.squeeze(), groups=groups, callback=_on_step)
-    pbar.close()
-
-    logger.info(f"Best Parameters: {bayes_search.best_params_}")
-    test_score = bayes_search.best_estimator_.score(X_test, y_test.values.squeeze())
+    test_score = best_model.score(X_test, y_test.values.squeeze())
     logger.info(f"Test Set Accuracy: {test_score}")
-    return bayes_search, test_score
+    return study, best_model
 
 
 def search_rules(df1_train, df2_train, y_train, df1_test, df2_test, y_test,
