@@ -348,7 +348,7 @@ class ModelTrainingPipeline:
         libra_bs, libra_score = self._train_single_model(
             X_train=libra_train, y_train=y_train,
             X_test=libra_test, y_test=y_test,
-            groups=groups_train,
+            groups=groups_train, variant_seed=0,
         )
         results['libra'] = self._evaluate_on_test(
             libra_bs, libra_test, y_test,
@@ -361,6 +361,7 @@ class ModelTrainingPipeline:
             X_train=X_biom_mrf_train, y_train=y_train, 
             X_test=X_biom_mrf_test, y_test=y_test,
             groups=groups_train, cat_vars=cat_vars_biom_mrf,
+            variant_seed=10,
         )
         results['biom_mrf'] = self._evaluate_on_test(
             biom_mrf_bs, X_biom_mrf_test, y_test,
@@ -373,6 +374,7 @@ class ModelTrainingPipeline:
             X_train=X_biom_train, y_train=y_train,
             X_test=X_biom_test, y_test=y_test,
             groups=groups_train, cat_vars=categorical_biom,
+            variant_seed=20,
         )
         results['biom'] = self._evaluate_on_test(
             biom_bs, X_biom_test, y_test,
@@ -385,6 +387,7 @@ class ModelTrainingPipeline:
             X_train=X_mrf_train, y_train=y_train,
             X_test=X_mrf_test, y_test=y_test,
             groups=groups_train, cat_vars=categorical_mrf,
+            variant_seed=30,
         )
         results['mrf'] = self._evaluate_on_test(
             mrf_bs, X_mrf_test, y_test,
@@ -421,7 +424,7 @@ class ModelTrainingPipeline:
             X_biom_train, lm_train.iloc[:, :self.n_rules], y_train,
             X_biom_test, lm_test.iloc[:, :self.n_rules], y_test,
             self.param_space, model=self.model_name,
-            seed_rf=self.seed_rf, seed_bayes=self.seed_bayes,
+            seed_rf=self.seed_rf, seed_bayes=self.seed_bayes + 40,
             n_iter=self.n_iter, cv=self.cv_inner,
             groups=groups_train, cat_vars=categorical_biom,
             n_jobs=self.n_jobs, gpu=self.gpu,
@@ -459,7 +462,7 @@ class ModelTrainingPipeline:
             X_biom_train, X_mrf_train[top_vars], y_train,
             X_biom_test, X_mrf_test[top_vars], y_test,
             self.param_space, model=self.model_name,
-            seed_rf=self.seed_rf, seed_bayes=self.seed_bayes,
+            seed_rf=self.seed_rf, seed_bayes=self.seed_bayes + 50,
             n_iter=self.n_iter, cv=self.cv_inner,
             groups=groups_train, cat_vars=categorical_biom,
             n_jobs=self.n_jobs, gpu=self.gpu,
@@ -516,7 +519,7 @@ class ModelTrainingPipeline:
         }
 
     def _train_single_model(self, X_train, y_train, X_test, y_test,
-                            groups=None, cat_vars=None):
+                            groups=None, cat_vars=None, variant_seed=0):
         """
         Train a single model variant via Bayesian hyperparameter search.
 
@@ -529,6 +532,8 @@ class ModelTrainingPipeline:
             X_test, y_test: Test data (outer fold — truly unseen).
             groups: Group labels for inner CV.
             cat_vars: Categorical feature list (CatBoost only).
+            variant_seed (int): Offset added to ``seed_bayes`` so each model
+                variant explores a different region of hyperparameter space.
 
         Returns:
             tuple: ``(bayes_search, test_score)``
@@ -536,7 +541,7 @@ class ModelTrainingPipeline:
         return train_model(
             X_train, y_train, X_test, y_test,
             self.param_space, model=self.model_name,
-            seed_rf=self.seed_rf, seed_bayes=self.seed_bayes,
+            seed_rf=self.seed_rf, seed_bayes=self.seed_bayes + variant_seed,
             n_iter=self.n_iter, cv=self.cv_inner,
             groups=groups, cat_vars=cat_vars, n_jobs=self.n_jobs,
             gpu=self.gpu,
