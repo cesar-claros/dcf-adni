@@ -565,8 +565,9 @@ class ModelTrainingPipeline:
 
             RocCurveDisplay.from_predictions(
                 y_true, y_score,
-                ax=ax, name=display_name, color=color,
+                ax=ax, name=display_name,
                 plot_chance_level=is_last,
+                curve_kwargs={'color': color},
             )
 
         ax.minorticks_on()

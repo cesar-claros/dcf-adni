@@ -337,12 +337,18 @@ class ADNIPreprocess:
                         ]
                         == 1
                     ).all()
-                    dx_last = subject_df_months.iloc[-1]["DIAGNOSIS"]
+                    # At least one MCI/AD diagnosis after the first 12 months
+                    dx_any_after_12 = (
+                        subject_df_months[subject_df_months["months"] > 12][
+                            "DIAGNOSIS"
+                        ]
+                        != 1
+                    ).any()
 
-                    if dx_cn_before_12 and (dx_last != 1):
+                    if dx_cn_before_12 and dx_any_after_12:
                         baseline_df = baseline_df.copy()
                         baseline_df["study_duration"] = months.max()
-                        baseline_df["last_diagnosis"] = dx_last
+                        baseline_df["last_diagnosis"] = subject_df_months.iloc[-1]["DIAGNOSIS"]
                         filtered_data.append(baseline_df)
 
         self.subjects_transition_df = pd.concat(filtered_data).astype(
