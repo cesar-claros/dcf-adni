@@ -1056,7 +1056,7 @@ def train_model(X_train, y_train, X_test, y_test,
         sampler=sampler)
     study.optimize(
         objective, n_trials=n_iter,
-        n_jobs=os.cpu_count()//cv.n_splits if n_jobs==-1 else n_jobs, # if n_jobs=-1, divide the number cpus by the number of folds to avoid OOM
+        n_jobs=(os.cpu_count()//cv.n_splits)-1 if n_jobs==-1 else n_jobs, # if n_jobs=-1, divide the number cpus by the number of folds to avoid OOM
         show_progress_bar=True,
     )
 
