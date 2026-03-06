@@ -844,10 +844,13 @@ class FeatureImportanceScorer:
         leaf_weights = {}
         if model_type == 'catboost':
             raw_weights = model.get_leaf_weights()
-            # raw_weights is a list of arrays, one per tree
-            for tree_idx, tree_w in enumerate(raw_weights):
-                for leaf_idx, w in enumerate(tree_w):
-                    leaf_weights[f'tree_{tree_idx}-leaf_{leaf_idx}'] = abs(w)
+            leaf_counts = model.get_tree_leaf_counts()
+            # raw_weights is a flat array; slice by tree using leaf_counts
+            offset = 0
+            for tree_idx, n_leaves in enumerate(leaf_counts):
+                for leaf_idx in range(n_leaves):
+                    leaf_weights[f'tree_{tree_idx}-leaf_{leaf_idx}'] = abs(raw_weights[offset])
+                    offset += 1
         else:
             # For RF/XGBoost, use sample count per leaf as proxy weight
             for col in lm_train.columns:
