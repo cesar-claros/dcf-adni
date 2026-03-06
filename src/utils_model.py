@@ -318,6 +318,91 @@ class WoETransformer:
         return X_out
 
 
+class WoESklearnTransformer(BaseEstimator, TransformerMixin):
+    """
+    Sklearn-compatible WoE transformer for use in ``Pipeline``.
+
+    Unlike :class:`WoETransformer`, this follows the standard sklearn API
+    (``fit(X, y)`` / ``transform(X)``) so it can be embedded in an sklearn
+    ``Pipeline``. This ensures WoE bins are **only** fitted on the training
+    partition visible to each inner CV fold.
+
+    The transformer:
+      1. Fits ``BinningProcess`` on ``(X, y)`` during ``fit()``.
+      2. Applies the fitted binning during ``transform()`` to produce WoE
+         features suffixed ``_WOE``, negated (higher = higher risk).
+      3. Merges raw + WoE features, drops constant columns, casts categoricals.
+
+    Args:
+        woe_dict (dict): Feature-specific binning parameters (passed to
+            ``BinningProcess.binning_fit_params``).
+        categorical_variables (list[str]): Names of categorical features.
+    """
+
+    def __init__(self, woe_dict, categorical_variables):
+        self.woe_dict = woe_dict
+        self.categorical_variables = categorical_variables
+
+    def fit(self, X, y):
+        """
+        Fit WoE binning on the training data.
+
+        Args:
+            X (pd.DataFrame): Training features (raw).
+            y (array-like): Binary target variable.
+
+        Returns:
+            self
+        """
+        all_variables = list(
+            set(self.woe_dict.keys()).union(set(self.categorical_variables))
+        )
+        X_subset = X[all_variables] if all(v in X.columns for v in all_variables) else X
+
+        self.bp_ = BinningProcess(
+            X_subset.columns.tolist(),
+            categorical_variables=[
+                c for c in self.categorical_variables if c in X_subset.columns
+            ],
+            binning_fit_params=self.woe_dict,
+        )
+        X_woe = self.bp_.fit_transform(X_subset, y, metric='woe')
+        X_woe = -1 * X_woe.add_suffix('_WOE')
+
+        X_merged = pd.merge(X_subset, X_woe, left_index=True, right_index=True)
+        self.drop_cols_ = X_merged.columns[X_merged.nunique() == 1].tolist()
+        self.feature_names_out_ = [c for c in X_merged.columns if c not in self.drop_cols_]
+        return self
+
+    def transform(self, X):
+        """
+        Apply fitted WoE binning to new data.
+
+        Args:
+            X (pd.DataFrame): Features (raw) to transform.
+
+        Returns:
+            pd.DataFrame: Raw + WoE features, constants dropped, categoricals cast.
+        """
+        all_variables = list(
+            set(self.woe_dict.keys()).union(set(self.categorical_variables))
+        )
+        X_subset = X[all_variables] if all(v in X.columns for v in all_variables) else X
+
+        X_woe = self.bp_.transform(X_subset, metric='woe')
+        X_woe = -1 * X_woe.add_suffix('_WOE')
+
+        X_merged = pd.merge(X_subset, X_woe, left_index=True, right_index=True)
+        X_merged = X_merged.drop(columns=[c for c in self.drop_cols_ if c in X_merged.columns])
+
+        # Cast categoricals to str for CatBoost compatibility
+        cat_cols = [c for c in self.categorical_variables if c in X_merged.columns]
+        if cat_cols:
+            X_merged[cat_cols] = X_merged[cat_cols].astype(str)
+
+        return X_merged
+
+
 # =============================================================================
 # Statistical Helpers
 # =============================================================================
@@ -1071,6 +1156,91 @@ def train_model(X_train, y_train, X_test, y_test,
     test_score = best_model.score(X_test, y_test.values.squeeze())
     logger.info(f"Test Set Accuracy: {test_score}")
     return study, best_model
+
+
+def train_model_with_woe(X_train, y_train, X_test, y_test,
+                         woe_dict, categorical_variables,
+                         model='rf', seed_rf=0, seed_bayes=0, cv=10,
+                         n_iter=100, groups=None, cat_vars=None, n_jobs=-1,
+                         gpu=False):
+    """
+    Optuna hyperparameter search with WoE transformation inside the CV loop.
+
+    Wraps :class:`WoESklearnTransformer` and the classifier into an sklearn
+    ``Pipeline``. Each inner CV fold gets a **fresh** WoE fit, eliminating
+    the target leakage that occurs when WoE is fitted on the full outer
+    training set before the inner CV.
+
+    Args:
+        X_train, y_train: Outer training features (raw, pre-WoE) and target.
+        X_test, y_test: Outer test features (raw) and target.
+        woe_dict (dict): Feature-specific WoE binning parameters.
+        categorical_variables (list[str]): Categorical feature names.
+        model (str): Model type — ``'rf'``, ``'xgboost'``, or ``'catboost'``.
+        seed_rf (int): Seed for the model's random state.
+        seed_bayes (int): Seed for the Optuna TPE sampler.
+        cv: Cross-validation splitter or integer.
+        n_iter (int): Number of Optuna trials.
+        groups (array-like or None): Group labels for grouped CV.
+        cat_vars (list[str] or None): Categorical feature names for classifier.
+        n_jobs (int): Number of parallel jobs for inner CV folds.
+        gpu (bool): Enable GPU training for CatBoost.
+
+    Returns:
+        tuple: ``(study, best_pipe)``
+            - ``study``: Completed Optuna study.
+            - ``best_pipe``: Best Pipeline (WoE + model) refitted on full training set.
+    """
+    y_train_arr = y_train.values.squeeze()
+
+    def _make_pipeline(params):
+        """Create a fresh WoE + classifier Pipeline with given params."""
+        woe_step = WoESklearnTransformer(woe_dict, categorical_variables)
+        clf = create_model(model, seed=seed_rf, cat_vars=cat_vars, gpu=gpu)
+        clf.set_params(**params)
+        return Pipeline([('woe', woe_step), ('clf', clf)])
+
+    def _fit_and_score_fold(train_idx, val_idx, params):
+        """Train one CV fold (WoE + model) and return its AUC score."""
+        pipe = _make_pipeline(params)
+        pipe.fit(X_train.iloc[train_idx], y_train_arr[train_idx])
+        y_proba = pipe.predict_proba(X_train.iloc[val_idx])[:, 1]
+        return roc_auc_score(y_train_arr[val_idx], y_proba)
+
+    def objective(trial: Trial):
+        params = _suggest_params(trial, model)
+        splits = list(cv.split(X_train, y_train_arr, groups))
+        scores = Parallel(n_jobs=cv.n_splits if n_jobs == -1 else n_jobs,
+                          prefer='threads')(
+            delayed(_fit_and_score_fold)(train_idx, val_idx, params)
+            for train_idx, val_idx in splits
+        )
+        return np.mean(scores)
+
+    # Suppress Optuna's internal logging, use tqdm instead
+    optuna.logging.set_verbosity(optuna.logging.WARNING)
+    sampler = TPESampler(seed=seed_bayes)
+    study = optuna.create_study(
+        direction='maximize',
+        storage=JournalStorage(JournalFileBackend(file_path="./journal.log")),
+        sampler=sampler,
+    )
+    study.optimize(
+        objective, n_trials=n_iter,
+        n_jobs=(os.cpu_count() // cv.n_splits) - 1 if n_jobs == -1 else n_jobs,
+        show_progress_bar=True,
+    )
+
+    logger.info(f"Best Parameters: {study.best_params}")
+    logger.info(f"Best Inner CV AUC: {study.best_value:.4f}")
+
+    # Refit best pipeline on full training set
+    best_pipe = _make_pipeline(study.best_params)
+    best_pipe.fit(X_train, y_train_arr)
+
+    test_score = best_pipe.score(X_test, y_test.values.squeeze())
+    logger.info(f"Test Set Accuracy: {test_score}")
+    return study, best_pipe
 
 
 def search_rules(df1_train, df2_train, y_train, df1_test, df2_test, y_test,

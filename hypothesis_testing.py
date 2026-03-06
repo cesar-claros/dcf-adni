@@ -33,9 +33,7 @@ from sklearn.metrics import roc_auc_score
 from sklearn.model_selection import StratifiedGroupKFold, cross_val_predict
 
 from src.utils_model import (
-    WoETransformer,
-    create_model,
-    train_model,
+    train_model_with_woe,
     feature_engineering,
 )
 
@@ -61,12 +59,16 @@ def run_h1_stacking(model_name, seed_split, config_path=None,
     """
     Test incremental value of MRF features via stacking.
 
+    WoE transformation is applied **inside** the inner CV loop via
+    :class:`WoESklearnTransformer` in a Pipeline, so WoE bins are only
+    computed on inner-train data — eliminating label leakage.
+
     For each outer fold:
-      1. WoE transform (fresh per fold — no leakage)
-      2. Train BIOM-only model (Optuna inner CV) → OOF probabilities
-      3. Train MRF-only model (Optuna inner CV) → OOF probabilities
+      1. Extract raw features (no WoE pre-transformation)
+      2. Train BIOM pipeline (WoE + model, Optuna inner CV) → OOF probabilities
+      3. Train MRF pipeline (WoE + model, Optuna inner CV) → OOF probabilities
       4. Fit Logistic Regression on ``[biom_oof, mrf_oof]``
-      5. Predict on outer test set with first-stage models → stack → final
+      5. Predict on outer test set with first-stage pipelines → stack → final
       6. Compare BIOM-only AUC vs MRF-only AUC vs Stacked AUC
 
     Args:
@@ -89,7 +91,7 @@ def run_h1_stacking(model_name, seed_split, config_path=None,
     categorical_biom = cfg['categorical_biom']
     categorical_mrf = cfg['categorical_mrf']
 
-    # Inner CV splitter (used by Optuna for hyperparameter tuning)
+    # Inner CV splitter (used inside Optuna objective)
     cv_inner = StratifiedGroupKFold(
         n_splits=n_splits, shuffle=True, random_state=seed_cv,
     )
@@ -100,6 +102,10 @@ def run_h1_stacking(model_name, seed_split, config_path=None,
         'data/joint_dataset.csv', index_col=0,
     ).set_index('subject_id')
     dataset_df = feature_engineering(joint_dataset_df)
+
+    # Feature variable lists (raw, pre-WoE)
+    biom_vars = list(set(woe_dict_biom.keys()).union(set(categorical_biom)))
+    mrf_vars = list(set(woe_dict_mrf.keys()).union(set(categorical_mrf)))
 
     # Outer CV loop
     outer_cv = StratifiedGroupKFold(
@@ -120,59 +126,53 @@ def run_h1_stacking(model_name, seed_split, config_path=None,
                     f"Train={len(train_index)}, Test={len(test_index)}")
         logger.info(f"{'='*60}")
 
-        # Fresh WoE transformers per fold (no data leakage)
-        woe_biom = WoETransformer(woe_dict_biom, categorical_biom)
-        woe_mrf = WoETransformer(woe_dict_mrf, categorical_mrf)
-
-        # ----- Step 1: WoE Transformation -----
-        X_biom_train, X_biom_test, _, _, _ = \
-            woe_biom.fit_transform_split(dataset_df, train_index, test_index)
-        X_mrf_train, X_mrf_test, y_train, y_test, _ = \
-            woe_mrf.fit_transform_split(dataset_df, train_index, test_index)
-
+        # Raw features — NO pre-WoE transformation
+        X_biom_train = dataset_df.iloc[train_index][biom_vars]
+        X_biom_test = dataset_df.iloc[test_index][biom_vars]
+        X_mrf_train = dataset_df.iloc[train_index][mrf_vars]
+        X_mrf_test = dataset_df.iloc[test_index][mrf_vars]
+        y_train = dataset_df.iloc[train_index]['transition']
+        y_test = dataset_df.iloc[test_index]['transition']
         groups_train = dataset_df.iloc[train_index]['group']
 
-        # Cast categorical variables to str (CatBoost requirement)
-        for df in [X_biom_train, X_biom_test]:
-            df[categorical_biom] = df[categorical_biom].astype(str)
-        for df in [X_mrf_train, X_mrf_test]:
-            df[categorical_mrf] = df[categorical_mrf].astype(str)
-
-        # ----- Step 2: Train BIOM model + OOF predictions -----
-        logger.info("Training BIOM model...")
-        biom_study, biom_model = train_model(
+        # ----- Step 2: Train BIOM pipeline + OOF predictions -----
+        logger.info("Training BIOM pipeline (WoE inside inner CV)...")
+        biom_study, biom_pipe = train_model_with_woe(
             X_biom_train, y_train, X_biom_test, y_test,
+            woe_dict=woe_dict_biom,
+            categorical_variables=categorical_biom,
             model=model_name, seed_rf=seed_rf,
             seed_bayes=seed_bayes + 20, n_iter=n_iter,
             cv=cv_inner, groups=groups_train,
             cat_vars=categorical_biom, n_jobs=n_jobs, gpu=gpu,
         )
-        # OOF predictions on training set (for stacking features)
+        # OOF predictions — Pipeline refits WoE per inner fold (no leakage)
         biom_oof = cross_val_predict(
-            biom_model, X_biom_train, y_train,
+            biom_pipe, X_biom_train, y_train,
             cv=cv_inner, groups=groups_train,
             method='predict_proba', n_jobs=n_jobs,
         )[:, 1]
-        # Test set predictions
-        biom_test_proba = biom_model.predict_proba(X_biom_test)[:, 1]
+        biom_test_proba = biom_pipe.predict_proba(X_biom_test)[:, 1]
         biom_test_auc = roc_auc_score(y_test, biom_test_proba)
         logger.info(f"  BIOM test AUC: {biom_test_auc:.4f}")
 
-        # ----- Step 3: Train MRF model + OOF predictions -----
-        logger.info("Training MRF model...")
-        mrf_study, mrf_model = train_model(
+        # ----- Step 3: Train MRF pipeline + OOF predictions -----
+        logger.info("Training MRF pipeline (WoE inside inner CV)...")
+        mrf_study, mrf_pipe = train_model_with_woe(
             X_mrf_train, y_train, X_mrf_test, y_test,
+            woe_dict=woe_dict_mrf,
+            categorical_variables=categorical_mrf,
             model=model_name, seed_rf=seed_rf,
             seed_bayes=seed_bayes + 30, n_iter=n_iter,
             cv=cv_inner, groups=groups_train,
             cat_vars=categorical_mrf, n_jobs=n_jobs, gpu=gpu,
         )
         mrf_oof = cross_val_predict(
-            mrf_model, X_mrf_train, y_train,
+            mrf_pipe, X_mrf_train, y_train,
             cv=cv_inner, groups=groups_train,
             method='predict_proba', n_jobs=n_jobs,
         )[:, 1]
-        mrf_test_proba = mrf_model.predict_proba(X_mrf_test)[:, 1]
+        mrf_test_proba = mrf_pipe.predict_proba(X_mrf_test)[:, 1]
         mrf_test_auc = roc_auc_score(y_test, mrf_test_proba)
         logger.info(f"  MRF test AUC: {mrf_test_auc:.4f}")
 
