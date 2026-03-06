@@ -67,7 +67,6 @@ from src.utils_model import (
     FeatureImportanceScorer,
     create_model,
     train_model,
-    search_rules,
     feature_engineering,
     calculate_libra_revised,
 )
@@ -417,18 +416,9 @@ class ModelTrainingPipeline:
             all_features, correlation, unique_features, leaf_counts,
         )
 
-        # 6f. BIOM+rMRF model (biomarker + top rule-based leaf memberships)
+        # 6f. BIOM+rMRF model (biomarker + top leaf memberships, no RFE)
         pbar.set_description('Training BIOM+rMRF')
         pbar.update(1)
-        biom_rmrf_bs, biom_rmrf_score = search_rules(
-            X_biom_train, lm_train.iloc[:, :self.n_rules], y_train,
-            X_biom_test, lm_test.iloc[:, :self.n_rules], y_test,
-            self.param_space, model=self.model_name,
-            seed_rf=self.seed_rf, seed_bayes=self.seed_bayes + 40,
-            n_iter=self.n_iter, cv=self.cv_inner,
-            groups=groups_train, cat_vars=categorical_biom,
-            n_jobs=self.n_jobs, gpu=self.gpu,
-        )
         X_biom_rmrf_train = pd.merge(
             X_biom_train, lm_train.iloc[:, :self.n_rules],
             left_index=True, right_index=True,
@@ -441,6 +431,12 @@ class ModelTrainingPipeline:
             X_biom_all_test, lm_all_test.iloc[:, :self.n_rules],
             left_index=True, right_index=True,
         )
+        biom_rmrf_bs, biom_rmrf_score = self._train_single_model(
+            X_train=X_biom_rmrf_train, y_train=y_train,
+            X_test=X_biom_rmrf_test, y_test=y_test,
+            groups=groups_train, cat_vars=categorical_biom,
+            variant_seed=40,
+        )
         results['biom_rmrf'] = self._evaluate_on_test(
             biom_rmrf_bs, X_biom_rmrf_test, y_test,
         )
@@ -451,22 +447,13 @@ class ModelTrainingPipeline:
             return_train_score=True, return_estimator=True, return_indices=True,
         )
 
-        # 6g. BIOM+sMRF model (biomarker + top DCG-selected MRF features)
+        # 6g. BIOM+sMRF model (biomarker + top DCG-selected MRF features, no RFE)
         pbar.set_description('Training BIOM+sMRF')
         pbar.update(1)
         top_vars = dcg_importance.index[:self.n_subset]
         repeated_smrf = list(set(top_vars).intersection(set(X_biom_train.columns)))
         top_vars = top_vars.drop(repeated_smrf)
 
-        biom_smrf_bs, biom_smrf_score = search_rules(
-            X_biom_train, X_mrf_train[top_vars], y_train,
-            X_biom_test, X_mrf_test[top_vars], y_test,
-            self.param_space, model=self.model_name,
-            seed_rf=self.seed_rf, seed_bayes=self.seed_bayes + 50,
-            n_iter=self.n_iter, cv=self.cv_inner,
-            groups=groups_train, cat_vars=categorical_biom,
-            n_jobs=self.n_jobs, gpu=self.gpu,
-        )
         X_biom_smrf_train = pd.merge(
             X_biom_train, X_mrf_train[top_vars],
             left_index=True, right_index=True,
@@ -478,6 +465,12 @@ class ModelTrainingPipeline:
         X_biom_smrf_all_test = pd.merge(
             X_biom_all_test, X_mrf_all_test[top_vars],
             left_index=True, right_index=True,
+        )
+        biom_smrf_bs, biom_smrf_score = self._train_single_model(
+            X_train=X_biom_smrf_train, y_train=y_train,
+            X_test=X_biom_smrf_test, y_test=y_test,
+            groups=groups_train, cat_vars=categorical_biom,
+            variant_seed=50,
         )
         results['biom_smrf'] = self._evaluate_on_test(
             biom_smrf_bs, X_biom_smrf_test, y_test,
