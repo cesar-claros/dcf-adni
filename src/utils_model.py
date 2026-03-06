@@ -1013,7 +1013,7 @@ def train_model(X_train, y_train, X_test, y_test,
         n_iter (int): Number of Optuna trials.
         groups (array-like or None): Group labels for grouped cross-validation.
         cat_vars (list[str] or None): Categorical feature names (CatBoost).
-        n_jobs (int): Not used by Optuna (kept for API compatibility).
+        n_jobs (int): Number of parallel Optuna trials. Use ``1`` for\n            CatBoost GPU to avoid OOM. Use ``-1`` for all cores.
         gpu (bool): Enable GPU training for CatBoost.
 
     Returns:
@@ -1040,6 +1040,7 @@ def train_model(X_train, y_train, X_test, y_test,
     study = optuna.create_study(direction='maximize', sampler=sampler)
     study.optimize(
         objective, n_trials=n_iter,
+        n_jobs=n_jobs,
         show_progress_bar=True,
     )
 
