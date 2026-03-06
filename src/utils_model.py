@@ -45,6 +45,7 @@ from sklearn.pipeline import Pipeline
 from sklearn import set_config
 import optuna
 from optuna.samplers import TPESampler
+from joblib import Parallel, delayed
 from tqdm import tqdm
 from xgboost import XGBClassifier
 from catboost import CatBoostClassifier
@@ -968,9 +969,9 @@ def _suggest_params(trial, model):
     if model == 'catboost':
         return {
             'iterations':          trial.suggest_int('iterations', 100, 1000),
-            'learning_rate':       trial.suggest_float('learning_rate', 1e-3, 1.0, log=True),
+            'learning_rate':       trial.suggest_float('learning_rate', 1e-4, 1e-1, log=True),
             'depth':               trial.suggest_int('depth', 3, 10),
-            'l2_leaf_reg':         trial.suggest_float('l2_leaf_reg', 1.0, 10.0),
+            'l2_leaf_reg':         trial.suggest_float('l2_leaf_reg', 1e-3, 1e3, log=True),
             'bagging_temperature': trial.suggest_float('bagging_temperature', 0.0, 1.0),
             'border_count':        trial.suggest_int('border_count', 32, 255),
         }
@@ -1028,15 +1029,21 @@ def train_model(X_train, y_train, X_test, y_test,
     """
     y_train_arr = y_train.values.squeeze()
 
+    def _fit_and_score_fold(train_idx, val_idx, params):
+        """Train one CV fold and return its AUC score."""
+        m = create_model(model, seed=seed_rf, cat_vars=cat_vars, gpu=gpu)
+        m.set_params(**params)
+        m.fit(X_train.iloc[train_idx], y_train_arr[train_idx])
+        y_proba = m.predict_proba(X_train.iloc[val_idx])[:, 1]
+        return roc_auc_score(y_train_arr[val_idx], y_proba)
+
     def objective(trial: Trial):
         params = _suggest_params(trial, model)
-        scores = []
-        for train_idx, val_idx in cv.split(X_train, y_train_arr, groups):
-            m = create_model(model, seed=seed_rf, cat_vars=cat_vars, gpu=gpu)
-            m.set_params(**params)
-            m.fit(X_train.iloc[train_idx], y_train_arr[train_idx])
-            y_proba = m.predict_proba(X_train.iloc[val_idx])[:, 1]
-            scores.append(roc_auc_score(y_train_arr[val_idx], y_proba))
+        splits = list(cv.split(X_train, y_train_arr, groups))
+        scores = Parallel(n_jobs=n_jobs)(
+            delayed(_fit_and_score_fold)(train_idx, val_idx, params)
+            for train_idx, val_idx in splits
+        )
         return np.mean(scores)
 
     # Suppress Optuna's internal logging, use tqdm instead
@@ -1048,7 +1055,7 @@ def train_model(X_train, y_train, X_test, y_test,
         sampler=sampler)
     study.optimize(
         objective, n_trials=n_iter,
-        n_jobs=n_jobs,
+        n_jobs=1,
         show_progress_bar=True,
     )
 
