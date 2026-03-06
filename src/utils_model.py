@@ -971,7 +971,7 @@ def _suggest_params(trial, model):
         return {
             'iterations':          trial.suggest_int('iterations', 100, 1000),
             'learning_rate':       trial.suggest_float('learning_rate', 1e-4, 1e-1, log=True),
-            'depth':               trial.suggest_int('depth', 3, 10),
+            'depth':               trial.suggest_int('depth', 2, 10),
             'l2_leaf_reg':         trial.suggest_float('l2_leaf_reg', 1e-3, 1e3, log=True),
             'bagging_temperature': trial.suggest_float('bagging_temperature', 0.0, 1.0),
             'border_count':        trial.suggest_int('border_count', 32, 255),
@@ -979,18 +979,18 @@ def _suggest_params(trial, model):
     elif model == 'xgboost':
         return {
             'n_estimators':     trial.suggest_int('n_estimators', 100, 1000),
-            'learning_rate':    trial.suggest_float('learning_rate', 0.01, 0.3, log=True),
-            'max_depth':        trial.suggest_int('max_depth', 4, 20),
+            'learning_rate':    trial.suggest_float('learning_rate', 1e-4, 1e-1, log=True),
+            'max_depth':        trial.suggest_int('max_depth', 2, 20),
             'subsample':        trial.suggest_float('subsample', 0.5, 1.0),
             'colsample_bytree': trial.suggest_float('colsample_bytree', 0.5, 1.0),
-            'gamma':            trial.suggest_float('gamma', 0.0, 5.0),
-            'reg_alpha':        trial.suggest_float('reg_alpha', 0.0, 10.0),
-            'reg_lambda':       trial.suggest_float('reg_lambda', 1.0, 10.0),
+            'gamma':            trial.suggest_float('gamma', 0.0, 1e2),
+            'reg_alpha':        trial.suggest_float('reg_alpha', 0.0, 1e2),
+            'reg_lambda':       trial.suggest_float('reg_lambda', 1.0, 1e2),
         }
     elif model == 'rf':
         return {
             'n_estimators':      trial.suggest_int('n_estimators', 100, 300),
-            'max_depth':         trial.suggest_int('max_depth', 4, 20),
+            'max_depth':         trial.suggest_int('max_depth', 2, 20),
             'min_samples_split': trial.suggest_int('min_samples_split', 5, 20),
             'min_samples_leaf':  trial.suggest_int('min_samples_leaf', 5, 20),
             'max_features':      trial.suggest_categorical('max_features', ['sqrt', 'log2']),
