@@ -298,11 +298,11 @@ class ModelTrainingPipeline:
             set(categorical_biom).union(set(categorical_mrf))
         )
         for df in [X_biom_mrf_train, X_biom_mrf_test, X_biom_mrf_all_test]:
-            df[cat_vars_biom_mrf] = df[cat_vars_biom_mrf].astype('category')
+            df[cat_vars_biom_mrf] = df[cat_vars_biom_mrf].astype(str).astype('category')
         for df in [X_biom_train, X_biom_test, X_biom_all_test]:
-            df[categorical_biom] = df[categorical_biom].astype('category')
+            df[categorical_biom] = df[categorical_biom].astype(str).astype('category')
         for df in [X_mrf_train, X_mrf_test, X_mrf_all_test]:
-            df[categorical_mrf] = df[categorical_mrf].astype('category')
+            df[categorical_mrf] = df[categorical_mrf].astype(str).astype('category')
 
         # ----- Step 6: Train all models -----
         results = {}

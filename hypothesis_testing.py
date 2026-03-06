@@ -132,11 +132,11 @@ def run_h1_stacking(model_name, seed_split, config_path=None,
 
         groups_train = dataset_df.iloc[train_index]['group']
 
-        # Cast categorical variables to category dtype (works for all model types)
+        # Cast categorical variables: str → category (XGBoost needs non-float categories)
         for df in [X_biom_train, X_biom_test]:
-            df[categorical_biom] = df[categorical_biom].astype('category')
+            df[categorical_biom] = df[categorical_biom].astype(str).astype('category')
         for df in [X_mrf_train, X_mrf_test]:
-            df[categorical_mrf] = df[categorical_mrf].astype('category')
+            df[categorical_mrf] = df[categorical_mrf].astype(str).astype('category')
 
         # ----- Step 2: Train BIOM model + OOF predictions -----
         logger.info("Training BIOM model...")
