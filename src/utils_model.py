@@ -347,6 +347,9 @@ class WoESklearnTransformer(BaseEstimator, TransformerMixin):
         """
         Fit WoE binning on the training data.
 
+        Columns that are entirely NaN (common in small inner CV folds) are
+        skipped and passed through as raw features only.
+
         Args:
             X (pd.DataFrame): Training features (raw).
             y (array-like): Binary target variable.
@@ -359,14 +362,31 @@ class WoESklearnTransformer(BaseEstimator, TransformerMixin):
         )
         X_subset = X[all_variables] if all(v in X.columns for v in all_variables) else X
 
+        # Skip columns that are all-NaN (would cause 0-sample error in optbinning)
+        valid_mask = X_subset.notna().any()
+        self.skip_cols_ = valid_mask[~valid_mask].index.tolist()
+        X_valid = X_subset.drop(columns=self.skip_cols_)
+
+        if len(X_valid.columns) == 0:
+            # All columns are NaN — just pass through raw features
+            self.bp_ = None
+            self.drop_cols_ = []
+            self.feature_names_out_ = X_subset.columns.tolist()
+            return self
+
+        # Filter woe_dict to only include valid columns
+        valid_woe_dict = {
+            k: v for k, v in self.woe_dict.items() if k in X_valid.columns
+        }
+
         self.bp_ = BinningProcess(
-            X_subset.columns.tolist(),
+            X_valid.columns.tolist(),
             categorical_variables=[
-                c for c in self.categorical_variables if c in X_subset.columns
+                c for c in self.categorical_variables if c in X_valid.columns
             ],
-            binning_fit_params=self.woe_dict,
+            binning_fit_params=valid_woe_dict,
         )
-        X_woe = self.bp_.fit_transform(X_subset, y, metric='woe')
+        X_woe = self.bp_.fit_transform(X_valid, y, metric='woe')
         X_woe = -1 * X_woe.add_suffix('_WOE')
 
         X_merged = pd.merge(X_subset, X_woe, left_index=True, right_index=True)
@@ -389,10 +409,15 @@ class WoESklearnTransformer(BaseEstimator, TransformerMixin):
         )
         X_subset = X[all_variables] if all(v in X.columns for v in all_variables) else X
 
-        X_woe = self.bp_.transform(X_subset, metric='woe')
-        X_woe = -1 * X_woe.add_suffix('_WOE')
+        if self.bp_ is None:
+            # All columns were NaN during fit — return raw features only
+            X_merged = X_subset.copy()
+        else:
+            X_valid = X_subset.drop(columns=[c for c in self.skip_cols_ if c in X_subset.columns])
+            X_woe = self.bp_.transform(X_valid, metric='woe')
+            X_woe = -1 * X_woe.add_suffix('_WOE')
+            X_merged = pd.merge(X_subset, X_woe, left_index=True, right_index=True)
 
-        X_merged = pd.merge(X_subset, X_woe, left_index=True, right_index=True)
         X_merged = X_merged.drop(columns=[c for c in self.drop_cols_ if c in X_merged.columns])
 
         # Cast categoricals to str for CatBoost compatibility
