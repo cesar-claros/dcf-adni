@@ -181,9 +181,6 @@ def create_model(model_name, seed=0, cat_vars=None, gpu=False):
         return XGBClassifier(
             objective='binary:logistic',
             eval_metric='logloss',
-            use_label_encoder=False,
-            enable_categorical=True,
-            tree_method='hist',
             random_state=seed,
         )
     elif model_name == 'catboost':
@@ -1111,6 +1108,31 @@ def _suggest_params(trial, model):
         raise ValueError(f"Unknown model type: {model}")
 
 
+def _encode_categoricals(df, model_name):
+    """
+    Encode categorical columns based on model type.
+
+    - **CatBoost**: keeps ``str`` (native categorical support).
+    - **XGBoost / RF**: converts ``object`` and ``category`` columns to integer
+      codes. This avoids XGBoost's strict ``enable_categorical`` requirements.
+
+    Args:
+        df (pd.DataFrame): Data to encode (modified in-place and returned).
+        model_name (str): Model type.
+
+    Returns:
+        pd.DataFrame: Encoded copy.
+    """
+    df = df.copy()
+    if model_name == 'catboost':
+        for col in df.select_dtypes(include=['object', 'category']).columns:
+            df[col] = df[col].astype(str)
+    else:
+        for col in df.select_dtypes(include=['object', 'category']).columns:
+            df[col] = df[col].astype('category').cat.codes
+    return df
+
+
 def train_model(X_train, y_train, X_test, y_test,
                 model='rf', seed_rf=0, seed_bayes=0, cv=10,
                 n_iter=100, groups=None, cat_vars=None, n_jobs=-1,
@@ -1142,17 +1164,20 @@ def train_model(X_train, y_train, X_test, y_test,
     """
     y_train_arr = y_train.values.squeeze()
 
+    # Encode categoricals once for the full training set
+    X_train_enc = _encode_categoricals(X_train, model)
+
     def _fit_and_score_fold(train_idx, val_idx, params):
         """Train one CV fold and return its AUC score."""
         m = create_model(model, seed=seed_rf, cat_vars=cat_vars, gpu=gpu)
         m.set_params(**params)
-        m.fit(X_train.iloc[train_idx], y_train_arr[train_idx])
-        y_proba = m.predict_proba(X_train.iloc[val_idx])[:, 1]
+        m.fit(X_train_enc.iloc[train_idx], y_train_arr[train_idx])
+        y_proba = m.predict_proba(X_train_enc.iloc[val_idx])[:, 1]
         return roc_auc_score(y_train_arr[val_idx], y_proba)
 
     def objective(trial: Trial):
         params = _suggest_params(trial, model)
-        splits = list(cv.split(X_train, y_train_arr, groups))
+        splits = list(cv.split(X_train_enc, y_train_arr, groups))
         scores = Parallel(n_jobs=cv.n_splits if n_jobs==-1 else n_jobs, prefer='threads')(
             delayed(_fit_and_score_fold)(train_idx, val_idx, params)
             for train_idx, val_idx in splits
@@ -1178,9 +1203,10 @@ def train_model(X_train, y_train, X_test, y_test,
     # Refit best model on full training set
     best_model = create_model(model, seed=seed_rf, cat_vars=cat_vars, gpu=gpu)
     best_model.set_params(**study.best_params)
-    best_model.fit(X_train, y_train_arr)
+    best_model.fit(X_train_enc, y_train_arr)
 
-    test_score = best_model.score(X_test, y_test.values.squeeze())
+    X_test_enc = _encode_categoricals(X_test, model)
+    test_score = best_model.score(X_test_enc, y_test.values.squeeze())
     logger.info(f"Test Set Accuracy: {test_score}")
     return study, best_model
 

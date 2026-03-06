@@ -34,6 +34,7 @@ from sklearn.model_selection import StratifiedGroupKFold, cross_val_predict
 
 from src.utils_model import (
     WoETransformer,
+    _encode_categoricals,
     create_model,
     train_model,
     feature_engineering,
@@ -148,13 +149,16 @@ def run_h1_stacking(model_name, seed_split, config_path=None,
             cat_vars=categorical_biom, n_jobs=n_jobs, gpu=gpu,
         )
         # OOF predictions on training set (for stacking features)
+        # Encode categoricals for the trained model
+        X_biom_train_enc = _encode_categoricals(X_biom_train, model_name)
+        X_biom_test_enc = _encode_categoricals(X_biom_test, model_name)
         biom_oof = cross_val_predict(
-            biom_model, X_biom_train, y_train,
+            biom_model, X_biom_train_enc, y_train,
             cv=cv_inner, groups=groups_train,
             method='predict_proba', n_jobs=n_jobs,
         )[:, 1]
         # Test set predictions
-        biom_test_proba = biom_model.predict_proba(X_biom_test)[:, 1]
+        biom_test_proba = biom_model.predict_proba(X_biom_test_enc)[:, 1]
         biom_test_auc = roc_auc_score(y_test, biom_test_proba)
         logger.info(f"  BIOM test AUC: {biom_test_auc:.4f}")
 
@@ -167,12 +171,14 @@ def run_h1_stacking(model_name, seed_split, config_path=None,
             cv=cv_inner, groups=groups_train,
             cat_vars=categorical_mrf, n_jobs=n_jobs, gpu=gpu,
         )
+        X_mrf_train_enc = _encode_categoricals(X_mrf_train, model_name)
+        X_mrf_test_enc = _encode_categoricals(X_mrf_test, model_name)
         mrf_oof = cross_val_predict(
-            mrf_model, X_mrf_train, y_train,
+            mrf_model, X_mrf_train_enc, y_train,
             cv=cv_inner, groups=groups_train,
             method='predict_proba', n_jobs=n_jobs,
         )[:, 1]
-        mrf_test_proba = mrf_model.predict_proba(X_mrf_test)[:, 1]
+        mrf_test_proba = mrf_model.predict_proba(X_mrf_test_enc)[:, 1]
         mrf_test_auc = roc_auc_score(y_test, mrf_test_proba)
         logger.info(f"  MRF test AUC: {mrf_test_auc:.4f}")
 
