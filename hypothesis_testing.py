@@ -57,8 +57,27 @@ def _load_config(config_path=None):
 # Hypothesis 1: MRF Incremental Value via Stacking
 # =============================================================================
 
-def run_h1_stacking(model_name, seed_split, config_path=None,
-                    gpu=False, n_jobs=-1):
+def _filter_features(df, mode):
+    """
+    Filter columns based on feature mode.
+
+    Args:
+        df (pd.DataFrame): DataFrame with raw + WoE columns.
+        mode (str): One of ``'raw'``, ``'woe'``, ``'raw_woe'``.
+
+    Returns:
+        pd.DataFrame: Filtered DataFrame.
+    """
+    if mode == 'raw':
+        return df[[c for c in df.columns if not c.endswith('_WOE')]]
+    elif mode == 'woe':
+        return df[[c for c in df.columns if c.endswith('_WOE')]]
+    else:  # raw_woe
+        return df
+
+
+def run_h1_stacking(model_name, seed_split, feature_mode='raw_woe',
+                    config_path=None, gpu=False, n_jobs=-1):
     """
     Test incremental value of MRF features via stacking.
 
@@ -73,6 +92,8 @@ def run_h1_stacking(model_name, seed_split, config_path=None,
     Args:
         model_name (str): Base model type (``'catboost'``, ``'xgboost'``, ``'rf'``).
         seed_split (int): Seed for outer StratifiedGroupKFold.
+        feature_mode (str): Which features to use — ``'raw'`` (originals only),
+            ``'woe'`` (WoE-transformed only), or ``'raw_woe'`` (both).
         config_path (str or None): Path to YAML config.
         gpu (bool): Enable GPU training for CatBoost.
         n_jobs (int): Number of parallel jobs.
@@ -89,6 +110,8 @@ def run_h1_stacking(model_name, seed_split, config_path=None,
     woe_dict_mrf = cfg['woe_dict_mrf']
     categorical_biom = cfg['categorical_biom']
     categorical_mrf = cfg['categorical_mrf']
+
+    logger.info(f"Feature mode: {feature_mode}")
 
     # Inner CV splitter (used by Optuna for hyperparameter tuning)
     cv_inner = StratifiedGroupKFold(
@@ -131,13 +154,26 @@ def run_h1_stacking(model_name, seed_split, config_path=None,
         X_mrf_train, X_mrf_test, y_train, y_test, _ = \
             woe_mrf.fit_transform_split(dataset_df, train_index, test_index)
 
+        # Filter features based on mode
+        X_biom_train = _filter_features(X_biom_train, feature_mode)
+        X_biom_test = _filter_features(X_biom_test, feature_mode)
+        X_mrf_train = _filter_features(X_mrf_train, feature_mode)
+        X_mrf_test = _filter_features(X_mrf_test, feature_mode)
+
+        logger.info(f"  BIOM features: {X_biom_train.shape[1]}, "
+                    f"MRF features: {X_mrf_train.shape[1]}")
+
         groups_train = dataset_df.iloc[train_index]['group']
 
-        # Cast categorical variables: str → category (XGBoost needs non-float categories)
+        # Cast categorical variables: str → category
+        cat_biom = [c for c in categorical_biom if c in X_biom_train.columns]
+        cat_mrf = [c for c in categorical_mrf if c in X_mrf_train.columns]
         for df in [X_biom_train, X_biom_test]:
-            df[categorical_biom] = df[categorical_biom].astype(str).astype('category')
+            if cat_biom:
+                df[cat_biom] = df[cat_biom].astype(str).astype('category')
         for df in [X_mrf_train, X_mrf_test]:
-            df[categorical_mrf] = df[categorical_mrf].astype(str).astype('category')
+            if cat_mrf:
+                df[cat_mrf] = df[cat_mrf].astype(str).astype('category')
 
         # ----- Step 2: Train BIOM model + OOF predictions -----
         logger.info("Training BIOM model...")
@@ -211,7 +247,7 @@ def run_h1_stacking(model_name, seed_split, config_path=None,
         logger.info(f"  {name:>8s}: AUC = {np.mean(aucs):.3f} ± {np.std(aucs):.3f}")
 
     # ----- Boxplot -----
-    prefix = f'plots/h1_stacking_{model_name}_seed_{seed_split}'
+    prefix = f'plots/h1_stacking_{model_name}_{feature_mode}_seed_{seed_split}'
     auc_rows = []
     for name in ['biom', 'mrf', 'stacked']:
         for auc in fold_aucs[name]:
@@ -230,10 +266,11 @@ def run_h1_stacking(model_name, seed_split, config_path=None,
     logger.info(f"Plot saved to {prefix}_boxplot.pdf")
 
     # ----- Save results -----
-    results_path = f'results/h1_stacking_{model_name}_seed_{seed_split}.joblib'
+    results_path = f'results/h1_stacking_{model_name}_{feature_mode}_seed_{seed_split}.joblib'
     joblib.dump({
         'hypothesis': 'h1_stacking',
         'model_name': model_name,
+        'feature_mode': feature_mode,
         'seed_split': seed_split,
         'n_folds': n_splits,
         'fold_aucs': fold_aucs,
@@ -273,6 +310,12 @@ if __name__ == '__main__':
         help="Enable GPU training for CatBoost",
     )
     parser.add_argument(
+        '--feature_mode', type=str, default='raw_woe',
+        choices=['raw', 'woe', 'raw_woe'],
+        help="Feature selection: 'raw' (original variables only), "
+             "'woe' (WoE-transformed only), 'raw_woe' (both, default)",
+    )
+    parser.add_argument(
         '--n_jobs', type=int, default=None,
         help="Number of parallel jobs (default: 1 for GPU, -1 for CPU)",
     )
@@ -283,6 +326,7 @@ if __name__ == '__main__':
     HYPOTHESES[args.hypothesis](
         model_name=args.model_name,
         seed_split=args.seed_split,
+        feature_mode=args.feature_mode,
         gpu=args.gpu,
         n_jobs=n_jobs,
     )
