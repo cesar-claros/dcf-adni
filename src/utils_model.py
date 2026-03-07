@@ -1088,13 +1088,13 @@ def _suggest_params(trial, model):
     elif model == 'xgboost':
         return {
             'n_estimators':     trial.suggest_int('n_estimators', 100, 1000),
-            'learning_rate':    trial.suggest_float('learning_rate', 1e-4, 1e-1, log=True),
-            'max_depth':        trial.suggest_int('max_depth', 2, 20),
+            'learning_rate':    trial.suggest_float('learning_rate', 1e-3, 3e-1, log=True),
+            'max_depth':        trial.suggest_int('max_depth', 2, 8),
             'subsample':        trial.suggest_float('subsample', 0.5, 1.0),
             'colsample_bytree': trial.suggest_float('colsample_bytree', 0.5, 1.0),
-            'gamma':            trial.suggest_float('gamma', 0.0, 1e2),
-            'reg_alpha':        trial.suggest_float('reg_alpha', 0.0, 1e2),
-            'reg_lambda':       trial.suggest_float('reg_lambda', 1.0, 1e2),
+            'gamma':            trial.suggest_float('gamma', 0.0, 5.0),
+            'reg_alpha':        trial.suggest_float('reg_alpha', 1e-3, 10.0, log=True),
+            'reg_lambda':       trial.suggest_float('reg_lambda', 1e-3, 10.0, log=True),
         }
     elif model == 'rf':
         return {
