@@ -182,7 +182,7 @@ def run_h1_stacking(model_name, seed_split, feature_mode='raw_woe',
             model=model_name, seed_rf=seed_rf,
             seed_bayes=seed_bayes + 20, n_iter=n_iter,
             cv=cv_inner, groups=groups_train,
-            cat_vars=categorical_biom, n_jobs=n_jobs, gpu=gpu,
+            cat_vars=cat_biom or None, n_jobs=n_jobs, gpu=gpu,
         )
         # OOF predictions on training set (for stacking features)
         # Encode categoricals for the trained model
@@ -205,7 +205,7 @@ def run_h1_stacking(model_name, seed_split, feature_mode='raw_woe',
             model=model_name, seed_rf=seed_rf,
             seed_bayes=seed_bayes + 30, n_iter=n_iter,
             cv=cv_inner, groups=groups_train,
-            cat_vars=categorical_mrf, n_jobs=n_jobs, gpu=gpu,
+            cat_vars=cat_mrf or None, n_jobs=n_jobs, gpu=gpu,
         )
         X_mrf_train_enc = _encode_categoricals(X_mrf_train, model_name)
         X_mrf_test_enc = _encode_categoricals(X_mrf_test, model_name)
