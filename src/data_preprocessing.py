@@ -62,7 +62,7 @@ class ADNIPreprocess:
         data_path: str = "data/All_Subjects_My_Table_03Jul2025.csv",
         mri_path: str = "data/UCSFFSX7_20Jun2025.csv",
         output_dir: str = "data/",
-        variance_threshold: float = 0.01,
+        variance_threshold: float = 0.05,
     ):
         self.data_path = data_path
         self.mri_path = mri_path
@@ -498,9 +498,11 @@ class ADNIPreprocess:
 
         log.info("Exporting joint dataset → %s", joint_path)
         self.joint_dataset_df.to_csv(joint_path)
+        log.info("Shape of joint dataset: %s", self.joint_dataset_df.shape)
 
         log.info("Exporting remaining test set → %s", remaining_path)
         self.remaining_test_df.to_csv(remaining_path)
+        log.info("Shape of remaining test set: %s", self.remaining_test_df.shape)
 
         # MRI subset
         mri_joint_idx = list(
@@ -520,6 +522,7 @@ class ADNIPreprocess:
 
         log.info("Exporting MRI joint dataset → %s", mri_path)
         mri_joint_df.to_csv(mri_path)
+        log.info("Shape of MRI joint dataset: %s", mri_joint_df.shape)
 
     # ------------------------------------------------------------------
     # Top-level entry point
