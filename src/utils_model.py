@@ -257,9 +257,19 @@ class WoETransformer:
             tuple: ``(X_train, X_test, y_train, y_test, binning_process)``
                 where X includes both raw and WoE features.
         """
-        X_train_raw = dataset_df.iloc[train_idx][self.all_variables]
+        # Only use variables that actually survived preprocessing (e.g., variance threshold)
+        valid_vars = [v for v in self.all_variables if v in dataset_df.columns]
+        self.all_variables = valid_vars
+        self.categorical_variables = [
+            v for v in self.categorical_variables if v in dataset_df.columns
+        ]
+        self.woe_dict = {
+            k: v for k, v in self.woe_dict.items() if k in dataset_df.columns
+        }
+
+        X_train_raw = dataset_df.iloc[train_idx][valid_vars]
         y_train = dataset_df.loc[X_train_raw.index, 'transition']
-        X_test_raw = dataset_df.iloc[test_idx][self.all_variables]
+        X_test_raw = dataset_df.iloc[test_idx][valid_vars]
         y_test = dataset_df.loc[X_test_raw.index, 'transition']
 
         # Fit binning process on training data ONLY
