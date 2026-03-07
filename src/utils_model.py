@@ -1080,10 +1080,12 @@ def _suggest_params(trial, model):
         return {
             'iterations':          trial.suggest_int('iterations', 100, 1000),
             'learning_rate':       trial.suggest_float('learning_rate', 1e-4, 1e-1, log=True),
-            'depth':               trial.suggest_int('depth', 2, 10),
+            'depth':               trial.suggest_int('depth', 2, 8),
             'l2_leaf_reg':         trial.suggest_float('l2_leaf_reg', 1e-3, 1e3, log=True),
             'bagging_temperature': trial.suggest_float('bagging_temperature', 0.0, 1.0),
             'border_count':        trial.suggest_int('border_count', 32, 255),
+            'min_data_in_leaf':    trial.suggest_int('min_data_in_leaf', 1, 50),
+            'random_strength':     trial.suggest_float('random_strength', 0.0, 10.0),
         }
     elif model == 'xgboost':
         return {
