@@ -77,8 +77,9 @@ def _filter_features(df, mode):
         return df
 
 
-def run_h1_stacking(model_name, seed_split, feature_mode='raw_woe',
-                    config_path=None, gpu=False, n_jobs=-1):
+def run_h1_stacking(model_name, seed_split, feature_mode_biom='raw_woe',
+                    feature_mode_mrf='raw_woe', config_path=None,
+                    gpu=False, n_jobs=-1):
     """
     Test incremental value of MRF features via stacking.
 
@@ -93,8 +94,8 @@ def run_h1_stacking(model_name, seed_split, feature_mode='raw_woe',
     Args:
         model_name (str): Base model type (``'catboost'``, ``'xgboost'``, ``'rf'``).
         seed_split (int): Seed for outer StratifiedGroupKFold.
-        feature_mode (str): Which features to use — ``'raw'`` (originals only),
-            ``'woe'`` (WoE-transformed only), or ``'raw_woe'`` (both).
+        feature_mode_biom (str): Features to use for BIOM (raw, woe, raw_woe).
+        feature_mode_mrf (str): Features to use for MRF (raw, woe, raw_woe).
         config_path (str or None): Path to YAML config.
         gpu (bool): Enable GPU training for CatBoost.
         n_jobs (int): Number of parallel jobs.
@@ -112,7 +113,8 @@ def run_h1_stacking(model_name, seed_split, feature_mode='raw_woe',
     categorical_biom = cfg['categorical_biom']
     categorical_mrf = cfg['categorical_mrf']
 
-    logger.info(f"Feature mode: {feature_mode}")
+    logger.info(f"Feature mode BIOM: {feature_mode_biom}")
+    logger.info(f"Feature mode MRF:  {feature_mode_mrf}")
 
     # Inner CV splitter (used by Optuna for hyperparameter tuning)
     cv_inner = StratifiedGroupKFold(
@@ -156,10 +158,10 @@ def run_h1_stacking(model_name, seed_split, feature_mode='raw_woe',
             woe_mrf.fit_transform_split(dataset_df, train_index, test_index)
 
         # Filter features based on mode
-        X_biom_train = _filter_features(X_biom_train, feature_mode)
-        X_biom_test = _filter_features(X_biom_test, feature_mode)
-        X_mrf_train = _filter_features(X_mrf_train, feature_mode)
-        X_mrf_test = _filter_features(X_mrf_test, feature_mode)
+        X_biom_train = _filter_features(X_biom_train, feature_mode_biom)
+        X_biom_test = _filter_features(X_biom_test, feature_mode_biom)
+        X_mrf_train = _filter_features(X_mrf_train, feature_mode_mrf)
+        X_mrf_test = _filter_features(X_mrf_test, feature_mode_mrf)
 
         logger.info(f"  BIOM features: {X_biom_train.shape[1]}, "
                     f"MRF features: {X_mrf_train.shape[1]}")
@@ -248,7 +250,7 @@ def run_h1_stacking(model_name, seed_split, feature_mode='raw_woe',
         logger.info(f"  {name:>8s}: AUC = {np.mean(aucs):.3f} ± {np.std(aucs):.3f}")
 
     # ----- Boxplot -----
-    prefix = f'plots/h1_stacking_{model_name}_{feature_mode}_seed_{seed_split}'
+    prefix = f'plots/h1_stacking_{model_name}_B{feature_mode_biom}_M{feature_mode_mrf}_seed_{seed_split}'
     auc_rows = []
     for name in ['biom', 'mrf', 'stacked']:
         for auc in fold_aucs[name]:
@@ -267,11 +269,12 @@ def run_h1_stacking(model_name, seed_split, feature_mode='raw_woe',
     logger.info(f"Plot saved to {prefix}_boxplot.pdf")
 
     # ----- Save results -----
-    results_path = f'results/h1_stacking_{model_name}_{feature_mode}_seed_{seed_split}.joblib'
+    results_path = f'results/h1_stacking_{model_name}_B{feature_mode_biom}_M{feature_mode_mrf}_seed_{seed_split}.joblib'
     joblib.dump({
         'hypothesis': 'h1_stacking',
         'model_name': model_name,
-        'feature_mode': feature_mode,
+        'feature_mode_biom': feature_mode_biom,
+        'feature_mode_mrf': feature_mode_mrf,
         'seed_split': seed_split,
         'n_folds': n_splits,
         'fold_aucs': fold_aucs,
@@ -283,7 +286,9 @@ def run_h1_stacking(model_name, seed_split, feature_mode='raw_woe',
 # Hypothesis 2: Conditional MRF Feature Selection (Forward Selection)
 # =============================================================================
 
-def run_h2_forward_selection(model_name, seed_split, feature_mode='raw_woe',
+def run_h2_forward_selection(model_name, seed_split,
+                             feature_mode_biom='raw_woe',
+                             feature_mode_mrf='raw_woe',
                              config_path=None, gpu=False, n_jobs=-1,
                              auc_threshold=0.005):
     """
@@ -299,7 +304,8 @@ def run_h2_forward_selection(model_name, seed_split, feature_mode='raw_woe',
     Args:
         model_name (str): Base model type.
         seed_split (int): Seed for outer StratifiedGroupKFold.
-        feature_mode (str): ``'raw'``, ``'woe'``, or ``'raw_woe'``.
+        feature_mode_biom (str): Features to use for BIOM (raw, woe, raw_woe).
+        feature_mode_mrf (str): Features to use for MRF (raw, woe, raw_woe).
         config_path (str or None): Path to YAML config.
         gpu (bool): Enable GPU training for CatBoost.
         n_jobs (int): Number of parallel jobs.
@@ -318,7 +324,9 @@ def run_h2_forward_selection(model_name, seed_split, feature_mode='raw_woe',
     categorical_biom = cfg['categorical_biom']
     categorical_mrf = cfg['categorical_mrf']
 
-    logger.info(f"Feature mode: {feature_mode}, AUC threshold: {auc_threshold}")
+    logger.info(f"Feature mode BIOM: {feature_mode_biom}")
+    logger.info(f"Feature mode MRF:  {feature_mode_mrf}")
+    logger.info(f"AUC threshold: {auc_threshold}")
 
     cv_inner = StratifiedGroupKFold(
         n_splits=n_splits, shuffle=True, random_state=seed_cv,
@@ -358,10 +366,10 @@ def run_h2_forward_selection(model_name, seed_split, feature_mode='raw_woe',
             woe_mrf.fit_transform_split(dataset_df, train_index, test_index)
 
         # Filter by feature mode
-        X_biom_train = _filter_features(X_biom_train, feature_mode)
-        X_biom_test = _filter_features(X_biom_test, feature_mode)
-        X_mrf_train = _filter_features(X_mrf_train, feature_mode)
-        X_mrf_test = _filter_features(X_mrf_test, feature_mode)
+        X_biom_train = _filter_features(X_biom_train, feature_mode_biom)
+        X_biom_test = _filter_features(X_biom_test, feature_mode_biom)
+        X_mrf_train = _filter_features(X_mrf_train, feature_mode_mrf)
+        X_mrf_test = _filter_features(X_mrf_test, feature_mode_mrf)
 
         groups_train = dataset_df.iloc[train_index]['group']
 
@@ -536,7 +544,7 @@ def run_h2_forward_selection(model_name, seed_split, feature_mode='raw_woe',
         logger.info(f"    {feat}: {count}/{n_splits} folds")
 
     # ----- Plots -----
-    prefix = f'plots/h2_forward_{model_name}_{feature_mode}_seed_{seed_split}'
+    prefix = f'plots/h2_forward_{model_name}_B{feature_mode_biom}_M{feature_mode_mrf}_seed_{seed_split}'
 
     # 1. Boxplot: BIOM vs BIOM+selected
     auc_rows = []
@@ -574,12 +582,13 @@ def run_h2_forward_selection(model_name, seed_split, feature_mode='raw_woe',
     logger.info(f"Plots saved to {prefix}_*.pdf")
 
     # ----- Save -----
-    results_path = (f'results/h2_forward_{model_name}_{feature_mode}'
-                    f'_seed_{seed_split}.joblib')
+    results_path = (f'results/h2_forward_{model_name}_B{feature_mode_biom}'
+                    f'_M{feature_mode_mrf}_seed_{seed_split}.joblib')
     joblib.dump({
         'hypothesis': 'h2_forward',
         'model_name': model_name,
-        'feature_mode': feature_mode,
+        'feature_mode_biom': feature_mode_biom,
+        'feature_mode_mrf': feature_mode_mrf,
         'seed_split': seed_split,
         'auc_threshold': auc_threshold,
         'fold_results': fold_results,
@@ -621,10 +630,15 @@ if __name__ == '__main__':
         help="Enable GPU training for CatBoost",
     )
     parser.add_argument(
-        '--feature_mode', type=str, default='raw_woe',
+        '--feature_mode_biom', type=str, default='raw_woe',
         choices=['raw', 'woe', 'raw_woe'],
-        help="Feature selection: 'raw' (original variables only), "
+        help="Feature selection for BIOM: 'raw' (original variables only), "
              "'woe' (WoE-transformed only), 'raw_woe' (both, default)",
+    )
+    parser.add_argument(
+        '--feature_mode_mrf', type=str, default='raw_woe',
+        choices=['raw', 'woe', 'raw_woe'],
+        help="Feature selection for MRF candidates: 'raw', 'woe', 'raw_woe'",
     )
     parser.add_argument(
         '--n_jobs', type=int, default=None,
@@ -637,7 +651,8 @@ if __name__ == '__main__':
     HYPOTHESES[args.hypothesis](
         model_name=args.model_name,
         seed_split=args.seed_split,
-        feature_mode=args.feature_mode,
+        feature_mode_biom=args.feature_mode_biom,
+        feature_mode_mrf=args.feature_mode_mrf,
         gpu=args.gpu,
         n_jobs=n_jobs,
     )
