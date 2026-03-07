@@ -9,3 +9,4 @@ catboost_info/
 journal.log
 results/
 slurm_script.qs
+R*.out
