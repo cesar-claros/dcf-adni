@@ -315,52 +315,52 @@ class ModelTrainingPipeline:
         # 6a. LIBRA model
         pbar.set_description('Training LIBRA')
         pbar.update(1)
-        libra_study, libra_model = self._train_single_model(
+        libra_study, libra_model, libra_inner_splits = self._train_single_model(
             X_train=libra_train, y_train=y_train,
             X_test=libra_test, y_test=y_test,
             groups=groups_train, variant_seed=0,
         )
         results['libra'] = self._evaluate_on_test(
-            libra_study, libra_model, libra_test, y_test,
+            libra_study, libra_model, libra_test, y_test, libra_inner_splits,
         )
 
         # 6b. BIOM+MRF model
         pbar.set_description('Training BIOM+MRF')
         pbar.update(1)
-        biom_mrf_study, biom_mrf_model = self._train_single_model(
+        biom_mrf_study, biom_mrf_model, biom_mrf_inner_splits = self._train_single_model(
             X_train=X_biom_mrf_train, y_train=y_train, 
             X_test=X_biom_mrf_test, y_test=y_test,
             groups=groups_train, cat_vars=cat_vars_biom_mrf,
             variant_seed=10,
         )
         results['biom_mrf'] = self._evaluate_on_test(
-            biom_mrf_study, biom_mrf_model, X_biom_mrf_test, y_test,
+            biom_mrf_study, biom_mrf_model, X_biom_mrf_test, y_test, biom_mrf_inner_splits,
         )
 
         # 6c. BIOM model
         pbar.set_description('Training BIOM')
         pbar.update(1)
-        biom_study, biom_model = self._train_single_model(
+        biom_study, biom_model, biom_inner_splits = self._train_single_model(
             X_train=X_biom_train, y_train=y_train,
             X_test=X_biom_test, y_test=y_test,
             groups=groups_train, cat_vars=categorical_biom,
             variant_seed=20,
         )
         results['biom'] = self._evaluate_on_test(
-            biom_study, biom_model, X_biom_test, y_test,
+            biom_study, biom_model, X_biom_test, y_test, biom_inner_splits,
         )
 
         # 6d. MRF model
         pbar.set_description('Training MRF')
         pbar.update(1)
-        mrf_study, mrf_model = self._train_single_model(
+        mrf_study, mrf_model, mrf_inner_splits = self._train_single_model(
             X_train=X_mrf_train, y_train=y_train,
             X_test=X_mrf_test, y_test=y_test,
             groups=groups_train, cat_vars=categorical_mrf,
             variant_seed=30,
         )
         results['mrf'] = self._evaluate_on_test(
-            mrf_study, mrf_model, X_mrf_test, y_test,
+            mrf_study, mrf_model, X_mrf_test, y_test, mrf_inner_splits,
         )
 
         # 6e. Extract tree rules from MRF model for rMRF/sMRF
@@ -402,14 +402,14 @@ class ModelTrainingPipeline:
             X_biom_all_test, lm_all_test.iloc[:, :self.n_rules],
             left_index=True, right_index=True,
         )
-        biom_rmrf_study, biom_rmrf_model = self._train_single_model(
+        biom_rmrf_study, biom_rmrf_model, biom_rmrf_inner_splits = self._train_single_model(
             X_train=X_biom_rmrf_train, y_train=y_train,
             X_test=X_biom_rmrf_test, y_test=y_test,
             groups=groups_train, cat_vars=categorical_biom,
             variant_seed=40,
         )
         results['biom_rmrf'] = self._evaluate_on_test(
-            biom_rmrf_study, biom_rmrf_model, X_biom_rmrf_test, y_test,
+            biom_rmrf_study, biom_rmrf_model, X_biom_rmrf_test, y_test, biom_rmrf_inner_splits,
         )
         biom_rmrf_cv = cross_validate(
             biom_rmrf_model, X_biom_rmrf_train, y_train,
@@ -437,14 +437,14 @@ class ModelTrainingPipeline:
             X_biom_all_test, X_mrf_all_test[top_vars],
             left_index=True, right_index=True,
         )
-        biom_smrf_study, biom_smrf_model = self._train_single_model(
+        biom_smrf_study, biom_smrf_model, biom_smrf_inner_splits = self._train_single_model(
             X_train=X_biom_smrf_train, y_train=y_train,
             X_test=X_biom_smrf_test, y_test=y_test,
             groups=groups_train, cat_vars=categorical_biom,
             variant_seed=50,
         )
         results['biom_smrf'] = self._evaluate_on_test(
-            biom_smrf_study, biom_smrf_model, X_biom_smrf_test, y_test,
+            biom_smrf_study, biom_smrf_model, X_biom_smrf_test, y_test, biom_smrf_inner_splits,
         )
 
         pbar.close()
@@ -500,7 +500,7 @@ class ModelTrainingPipeline:
                 variant explores a different region of hyperparameter space.
 
         Returns:
-            tuple: ``(study, best_model)``
+            tuple: ``(study, best_model, inner_splits)``
         """
         return train_model(
             X_train, y_train, X_test, y_test,
@@ -511,7 +511,7 @@ class ModelTrainingPipeline:
             gpu=self.gpu,
         )
 
-    def _evaluate_on_test(self, study, best_model, X_test, y_test):
+    def _evaluate_on_test(self, study, best_model, X_test, y_test, inner_splits=None):
         """
         Evaluate a trained model on the outer fold's held-out test set.
 
@@ -536,6 +536,7 @@ class ModelTrainingPipeline:
             'test_auc': test_auc,
             'best_params': study.best_params,
             'inner_cv_score': study.best_value,
+            'inner_splits': inner_splits,
         }
 
     def _plot_roc(self, ax, model_data, results, y_true, plot_type='test'):

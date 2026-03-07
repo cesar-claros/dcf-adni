@@ -1175,9 +1175,10 @@ def train_model(X_train, y_train, X_test, y_test,
         gpu (bool): Enable GPU training for CatBoost.
 
     Returns:
-        tuple: ``(study, best_model)``
+        tuple: ``(study, best_model, inner_splits)``
             - ``study``: Completed Optuna study.
             - ``best_model``: Best model refitted on the full training set.
+            - ``inner_splits``: List of ``(train_idx, val_idx)`` used in inner CV.
     """
     y_train_arr = y_train.values.squeeze()
 
@@ -1192,12 +1193,13 @@ def train_model(X_train, y_train, X_test, y_test,
         y_proba = m.predict_proba(X_train_enc.iloc[val_idx])[:, 1]
         return roc_auc_score(y_train_arr[val_idx], y_proba)
 
+    inner_splits = list(cv.split(X_train_enc, y_train_arr, groups))
+
     def objective(trial: Trial):
         params = _suggest_params(trial, model)
-        splits = list(cv.split(X_train_enc, y_train_arr, groups))
         scores = Parallel(n_jobs=cv.n_splits if n_jobs==-1 else n_jobs, prefer='threads')(
             delayed(_fit_and_score_fold)(train_idx, val_idx, params)
-            for train_idx, val_idx in splits
+            for train_idx, val_idx in inner_splits
         )
         return np.mean(scores)
 
@@ -1225,7 +1227,7 @@ def train_model(X_train, y_train, X_test, y_test,
     X_test_enc = _encode_categoricals(X_test, model)
     test_score = best_model.score(X_test_enc, y_test.values.squeeze())
     logger.info(f"Test Set Accuracy: {test_score}")
-    return study, best_model
+    return study, best_model, inner_splits
 
 
 def train_model_with_woe(X_train, y_train, X_test, y_test,

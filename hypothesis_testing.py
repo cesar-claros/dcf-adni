@@ -137,6 +137,7 @@ def run_h1_stacking(model_name, seed_split, feature_mode_biom='raw_woe',
     groups_all = dataset_df['group']
 
     fold_aucs = {'biom': [], 'mrf': [], 'stacked': []}
+    fold_splits = []
 
     for k, (train_index, test_index) in enumerate(tqdm(
         outer_cv.split(X_all, y_all, groups_all),
@@ -180,7 +181,7 @@ def run_h1_stacking(model_name, seed_split, feature_mode_biom='raw_woe',
 
         # ----- Step 2: Train BIOM model + OOF predictions -----
         logger.info("Training BIOM model...")
-        biom_study, biom_model = train_model(
+        biom_study, biom_model, biom_inner_splits = train_model(
             X_biom_train, y_train, X_biom_test, y_test,
             model=model_name, seed_rf=seed_rf,
             seed_bayes=seed_bayes + 20, n_iter=n_iter,
@@ -203,7 +204,7 @@ def run_h1_stacking(model_name, seed_split, feature_mode_biom='raw_woe',
 
         # ----- Step 3: Train MRF model + OOF predictions -----
         logger.info("Training MRF model...")
-        mrf_study, mrf_model = train_model(
+        mrf_study, mrf_model, mrf_inner_splits = train_model(
             X_mrf_train, y_train, X_mrf_test, y_test,
             model=model_name, seed_rf=seed_rf,
             seed_bayes=seed_bayes + 30, n_iter=n_iter,
@@ -240,6 +241,14 @@ def run_h1_stacking(model_name, seed_split, feature_mode_biom='raw_woe',
         fold_aucs['biom'].append(biom_test_auc)
         fold_aucs['mrf'].append(mrf_test_auc)
         fold_aucs['stacked'].append(stacked_test_auc)
+
+        fold_splits.append({
+            'fold': k,
+            'train_index': train_index,
+            'test_index': test_index,
+            'biom_inner_splits': biom_inner_splits,
+            'mrf_inner_splits': mrf_inner_splits,
+        })
 
     # ----- Summary -----
     logger.info(f"\n{'='*60}")
@@ -278,6 +287,7 @@ def run_h1_stacking(model_name, seed_split, feature_mode_biom='raw_woe',
         'seed_split': seed_split,
         'n_folds': n_splits,
         'fold_aucs': fold_aucs,
+        'fold_splits': fold_splits,
     }, results_path)
     logger.info(f"Results saved to {results_path}")
 
@@ -390,7 +400,7 @@ def run_h2_forward_selection(model_name, seed_split,
 
         # ----- Step 1: Train BIOM baseline -----
         logger.info("Training BIOM baseline model...")
-        biom_study, biom_model = train_model(
+        biom_study, biom_model, biom_inner_splits = train_model(
             X_biom_train, y_train, X_biom_test, y_test,
             model=model_name, seed_rf=seed_rf,
             seed_bayes=seed_bayes + 20, n_iter=n_iter,
@@ -516,6 +526,9 @@ def run_h2_forward_selection(model_name, seed_split,
 
         fold_results.append({
             'fold': k,
+            'train_index': train_index,
+            'test_index': test_index,
+            'biom_inner_splits': biom_inner_splits,
             'selected_features': selected_features,
             'selection_history': selection_history,
             'biom_test_auc': biom_test_auc,
