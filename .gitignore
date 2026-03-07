@@ -4,3 +4,8 @@ __pycache___
 outputs/
 .idea/
 .venv/
+plots/
+catboost_info/
+journal.log
+results/
+slurm_script.qs
