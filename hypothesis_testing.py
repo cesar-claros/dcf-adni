@@ -80,7 +80,7 @@ def _filter_features(df, mode):
 
 def run_h1_stacking(model_name, seed_split, feature_mode_biom='raw_woe',
                     feature_mode_mrf='raw_woe', config_path=None,
-                    gpu=False, n_jobs=-1):
+                    gpu=False, n_jobs=-1, **kwargs):
     """
     Test incremental value of MRF features via stacking.
 
@@ -301,7 +301,7 @@ def run_h2_forward_selection(model_name, seed_split,
                              feature_mode_biom='raw_woe',
                              feature_mode_mrf='raw_woe',
                              config_path=None, gpu=False, n_jobs=-1,
-                             auc_threshold=0.005):
+                             auc_threshold=0.005, **kwargs):
     """
     Test which specific MRF features add incremental value over BIOM.
 
