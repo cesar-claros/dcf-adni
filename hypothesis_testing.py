@@ -39,7 +39,6 @@ from src.utils_model import (
     create_model,
     train_model,
     feature_engineering,
-    extract_tree_leaves,
 )
 
 logging.basicConfig(level=logging.INFO, format='%(name)s — %(message)s')
