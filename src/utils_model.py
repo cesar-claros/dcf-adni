@@ -286,6 +286,17 @@ class WoETransformer:
         X_test_WOE = self.binning_process_.transform(X_test_raw, metric='woe')
         X_test_WOE = -1 * X_test_WOE.add_suffix('_WOE')
 
+        # Ensure no NaNs exist post-transformation in the WoE columns, replace with 0
+        for name, df in [('Train', X_train_WOE), ('Test', X_test_WOE)]:
+            nan_counts = df.isna().sum()
+            cols_with_nans = nan_counts[nan_counts > 0]
+            if not cols_with_nans.empty:
+                logger.warning(f"  [WoETransformer] {name} split: Found NaNs in "
+                               f"{len(cols_with_nans)} WoE-transformed columns. Replacing with 0.")
+                for col, count in cols_with_nans.items():
+                    logger.warning(f"    - {col}: {count} subjects imputed")
+                df.fillna(0, inplace=True)
+
         # Merge raw + WoE features
         X_train = pd.merge(X_train_raw, X_train_WOE, left_index=True, right_index=True)
         X_test = pd.merge(X_test_raw, X_test_WOE, left_index=True, right_index=True)
