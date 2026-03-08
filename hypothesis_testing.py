@@ -29,7 +29,7 @@ import pandas as pd
 import seaborn as sns
 import yaml
 from tqdm import tqdm
-from sklearn.linear_model import LogisticRegression
+from sklearn.linear_model import LogisticRegression, LogisticRegressionCV
 from sklearn.metrics import roc_auc_score
 from sklearn.model_selection import StratifiedGroupKFold, cross_val_predict
 
@@ -39,6 +39,7 @@ from src.utils_model import (
     create_model,
     train_model,
     feature_engineering,
+    extract_tree_leaves,
 )
 
 logging.basicConfig(level=logging.INFO, format='%(name)s — %(message)s')
@@ -611,12 +612,279 @@ def run_h2_forward_selection(model_name, seed_split,
 
 
 # =============================================================================
+# Hypothesis 3: Non-linear MRF interactions via Tree Leaves
+# =============================================================================
+
+def run_h3_tree_leaves(model_name, seed_split,
+                       feature_mode_biom='raw_woe',
+                       feature_mode_mrf='raw_woe',
+                       config_path=None, gpu=False, n_jobs=-1,
+                       leaf_min_support=0.05, leaf_top_k=100,
+                       leaf_filter_method='combined', **kwargs):
+    """
+    Test incremental value of MRF non-linear baseline expansion via tree leaves.
+
+    1. Train base model on MRF features independently.
+    2. Extract leaf identities for each sample across all MRF trees.
+    3. Filter leaves by minimum support in the training set.
+    4. Screen top K leaves by association (target correlation, weight, or both).
+    5. Fit L1-regularized Logistic Regression on [BIOM + selected_leaves]
+       to enforce sparsity and find stable indicators.
+    6. Evaluate combined model on held-out outer test fold.
+    """
+    if model_name != 'catboost':
+        raise ValueError("H3 tree leaves extraction is currently implemented "
+                         "optimally for CatBoost. Please use --model_name catboost.")
+
+    cfg = _load_config(config_path)
+    pipeline_cfg = cfg.get('pipeline', {})
+    n_iter = pipeline_cfg.get('n_iter', 50)
+    n_splits = pipeline_cfg.get('n_splits', 5)
+    seed_cv = pipeline_cfg.get('seed_cv', 0)
+    seed_rf = pipeline_cfg.get('seed_rf', 0)
+    seed_bayes = pipeline_cfg.get('seed_bayes', 0)
+
+    categorical_biom = cfg['categorical_biom']
+    categorical_mrf = cfg['categorical_mrf']
+    woe_dict_mrf = cfg['woe_dict_mrf']
+    woe_dict_biom = cfg['woe_dict_biom']
+
+    logger.info(f"Feature mode BIOM: {feature_mode_biom}")
+    logger.info(f"Feature mode MRF:  {feature_mode_mrf}")
+    logger.info(f"Leaf min support: {leaf_min_support}")
+    logger.info(f"Leaf top K: {leaf_top_k} (method: {leaf_filter_method})")
+
+    cv_inner = StratifiedGroupKFold(
+        n_splits=n_splits, shuffle=True, random_state=seed_cv,
+    )
+
+    logger.info("Loading data...")
+    joint_dataset_df = pd.read_csv(
+        'data/joint_dataset.csv', index_col=0,
+    ).set_index('subject_id')
+    dataset_df = feature_engineering(joint_dataset_df)
+
+    outer_cv = StratifiedGroupKFold(
+        n_splits=n_splits, shuffle=True, random_state=seed_split,
+    )
+    X_all = dataset_df.drop(['transition'], axis='columns')
+    y_all = dataset_df['transition']
+    groups_all = dataset_df['group']
+
+    fold_results = []
+    feat_counter = Counter()
+
+    for k, (train_index, test_index) in enumerate(tqdm(
+        outer_cv.split(X_all, y_all, groups_all),
+        total=n_splits, desc='Outer CV folds', unit='fold',
+    )):
+        logger.info(f"\n{'='*60}\nOuter fold {k+1}/{n_splits}\n{'='*60}")
+
+        # ----- Step 0: Data Preprocessing -----
+        woe_biom = WoETransformer(woe_dict_biom, categorical_biom)
+        X_biom_train, X_biom_test, _, _, _ = \
+            woe_biom.fit_transform_split(dataset_df, train_index, test_index)
+
+        woe_mrf = WoETransformer(woe_dict_mrf, categorical_mrf)
+        X_mrf_train, X_mrf_test, y_train, y_test, _ = \
+            woe_mrf.fit_transform_split(dataset_df, train_index, test_index)
+
+        X_biom_train = _filter_features(X_biom_train, feature_mode_biom)
+        X_biom_test = _filter_features(X_biom_test, feature_mode_biom)
+        X_mrf_train = _filter_features(X_mrf_train, feature_mode_mrf)
+        X_mrf_test = _filter_features(X_mrf_test, feature_mode_mrf)
+
+        groups_train = dataset_df.iloc[train_index]['group']
+
+        cat_biom = [c for c in categorical_biom if c in X_biom_train.columns]
+        cat_mrf = [c for c in categorical_mrf if c in X_mrf_train.columns]
+        for df in [X_biom_train, X_biom_test]:
+            if cat_biom:
+                df[cat_biom] = df[cat_biom].astype(str).astype('category')
+        for df in [X_mrf_train, X_mrf_test]:
+            if cat_mrf:
+                df[cat_mrf] = df[cat_mrf].astype(str).astype('category')
+
+        # Encode numeric representations for models that need it (LogReg)
+        X_biom_train_enc = _encode_categoricals(X_biom_train, model_name)
+        X_biom_test_enc = _encode_categoricals(X_biom_test, model_name)
+
+        # ----- Step 1: Train BIOM baseline -----
+        logger.info("Training BIOM baseline model...")
+        biom_study, biom_model, biom_inner_splits = train_model(
+            X_biom_train, y_train, X_biom_test, y_test,
+            model=model_name, seed_rf=seed_rf,
+            seed_bayes=seed_bayes + 20, n_iter=n_iter,
+            cv=cv_inner, groups=groups_train,
+            cat_vars=cat_biom or None, n_jobs=n_jobs, gpu=gpu,
+        )
+        biom_test_proba = biom_model.predict_proba(X_biom_test_enc)[:, 1]
+        biom_test_auc = roc_auc_score(y_test, biom_test_proba)
+        logger.info(f"  BIOM-only test AUC: {biom_test_auc:.4f}")
+
+        # ----- Step 2: Train MRF model & Extract Leaves -----
+        logger.info("Training MRF model for leaf extraction...")
+        mrf_study, mrf_model, mrf_inner_splits = train_model(
+            X_mrf_train, y_train, X_mrf_test, y_test,
+            model=model_name, seed_rf=seed_rf,
+            seed_bayes=seed_bayes + 30, n_iter=n_iter,
+            cv=cv_inner, groups=groups_train,
+            cat_vars=cat_mrf or None, n_jobs=n_jobs, gpu=gpu,
+        )
+
+        logger.info("Extracting leaf identities...")
+        # FeatureImportanceScorer returns binary leaf membership dataframes
+        X_mrf_train_enc = _encode_categoricals(X_mrf_train, model_name)
+        X_mrf_test_enc = _encode_categoricals(X_mrf_test, model_name)
+        
+        lm_train, lm_test, _, leaf_stats_df = FeatureImportanceScorer.compute_leaf_correlation(
+            mrf_model, 
+            X_mrf_train_enc, y_train, 
+            X_mrf_test_enc, y_test,
+            X_mrf_test_enc, y_test, # We don't have all_test in this script wrapper, pass test twice
+            model_type=model_name
+        )
+
+        # ----- Step 3: Support Filtering -----
+        total_samples = len(lm_train)
+        leaf_supports = lm_train.sum(axis=0) / total_samples
+        valid_leaves = leaf_supports[leaf_supports >= leaf_min_support].index
+        logger.info(f"  Leaves passing {leaf_min_support*100}% support: {len(valid_leaves)} / {len(lm_train.columns)}")
+        
+        lm_train_filtered = lm_train[valid_leaves]
+        lm_test_filtered = lm_test[valid_leaves]
+        stats_filtered = leaf_stats_df[leaf_stats_df['leaf'].isin(valid_leaves)]
+
+        # ----- Step 4: Association Filtering -----
+        if leaf_filter_method == 'target':
+            stats_filtered = stats_filtered.sort_values(by='correlation_target', ascending=False, key=abs)
+        elif leaf_filter_method == 'weight':
+            stats_filtered = stats_filtered.sort_values(by='leaf_weight', ascending=False)
+        elif leaf_filter_method == 'combined':
+            stats_filtered = stats_filtered.sort_values(by='combined_score', ascending=False)
+        else:
+            raise ValueError(f"Unknown leaf_filter_method: {leaf_filter_method}")
+
+        top_leaves = stats_filtered['leaf'].head(leaf_top_k).tolist()
+        logger.info(f"  Retaining top {len(top_leaves)} leaves by '{leaf_filter_method}'")
+        
+        lm_train_top = lm_train_filtered[top_leaves]
+        lm_test_top = lm_test_filtered[top_leaves]
+
+        # ----- Step 5: L1 Sparse Selection & Final Model -----
+        logger.info("Applying L1 LogisticRegression CV for sparse leaf selection...")
+        X_combined_train = pd.concat([X_biom_train_enc, lm_train_top], axis=1)
+        X_combined_test = pd.concat([X_biom_test_enc, lm_test_top], axis=1)
+
+        # We must scale features for L1 Logistic Regression
+        # We only scale the biom features, leaves are binary [0, 1]
+        biom_cols = X_biom_train_enc.columns
+        biom_means = X_combined_train[biom_cols].mean()
+        biom_stds = X_combined_train[biom_cols].std()
+        # Prevent zero division
+        biom_stds[biom_stds == 0] = 1.0 
+
+        X_combined_train_scaled = X_combined_train.copy()
+        X_combined_test_scaled = X_combined_test.copy()
+        X_combined_train_scaled[biom_cols] = (X_combined_train[biom_cols] - biom_means) / biom_stds
+        X_combined_test_scaled[biom_cols] = (X_combined_test[biom_cols] - biom_means) / biom_stds
+
+        # Create list of tuples for StratifiedGroupKFold to pass to LogisticRegressionCV
+        cv_inner_splits = list(cv_inner.split(X_combined_train_scaled, y_train, groups_train))
+
+        l1_model = LogisticRegressionCV(
+            Cs=10, cv=cv_inner_splits, penalty='l1', solver='liblinear',
+            scoring='roc_auc', random_state=seed_rf, n_jobs=n_jobs, max_iter=2000
+        )
+        l1_model.fit(X_combined_train_scaled, y_train)
+
+        # Identify which MRF leaves survived L1 selection
+        # (coef_[0] aligns with X_combined_train columns)
+        coefs = l1_model.coef_[0]
+        # the first len(biom_cols) are biom, the rest are the MRF leaves
+        leaf_coefs = coefs[len(biom_cols):]
+        selected_leaves = [leaf for leaf, c in zip(top_leaves, leaf_coefs) if abs(c) > 1e-5]
+
+        logger.info(f"  L1 selection kept {len(selected_leaves)} / {len(top_leaves)} MRF leaves.")
+        feat_counter.update(selected_leaves)
+
+        final_test_proba = l1_model.predict_proba(X_combined_test_scaled)[:, 1]
+        final_test_auc = roc_auc_score(y_test, final_test_proba)
+
+        logger.info(f"  BIOM-only test AUC: {biom_test_auc:.4f}")
+        logger.info(f"  BIOM+Leaves (L1) test AUC: {final_test_auc:.4f}")
+
+        fold_results.append({
+            'fold': k,
+            'train_index': train_index,
+            'test_index': test_index,
+            'biom_inner_splits': biom_inner_splits,
+            'top_K_leaves': top_leaves,
+            'selected_leaves': selected_leaves,
+            'leaf_coefficients': {leaf: c for leaf, c in zip(top_leaves, leaf_coefs) if abs(c) > 1e-5},
+            'biom_test_auc': biom_test_auc,
+            'final_test_auc': final_test_auc,
+        })
+
+    # ----- Aggregate & Summary -----
+    logger.info(f"\n{'='*60}\nH3 Tree Leaves — Summary across outer folds\n{'='*60}")
+    biom_aucs = [r['biom_test_auc'] for r in fold_results]
+    final_aucs = [r['final_test_auc'] for r in fold_results]
+    
+    logger.info(f"  BIOM-only AUC:      {np.mean(biom_aucs):.3f} ± {np.std(biom_aucs):.3f}")
+    logger.info(f"  BIOM+Leaves AUC:    {np.mean(final_aucs):.3f} ± {np.std(final_aucs):.3f}")
+
+    if feat_counter:
+        logger.info("Most frequently selected leaves:")
+        for feat, count in feat_counter.most_common(10):
+            logger.info(f"    {feat}: {count}/{n_splits} folds")
+
+    # ----- Plots -----
+    prefix = f'plots/h3_tree_leaves_{model_name}_B{feature_mode_biom}_M{feature_mode_mrf}_seed_{seed_split}'
+
+    # 1. Boxplot: BIOM vs BIOM+Leaves
+    auc_rows = []
+    for r in fold_results:
+        auc_rows.append({'model': 'BIOM-only', 'AUC': r['biom_test_auc']})
+        auc_rows.append({'model': 'BIOM+Leaves', 'AUC': r['final_test_auc']})
+
+    auc_df = pd.DataFrame(auc_rows)
+    fig, ax = plt.subplots(figsize=(6, 6))
+    sns.boxplot(data=auc_df, x='model', y='AUC',
+                color='.8', linecolor='#137', linewidth=0.75, ax=ax)
+    sns.stripplot(data=auc_df, x='model', y='AUC', ax=ax, size=8, jitter=False)
+    ax.set_title(f'H3: Non-linear MRF Leaves Incremental Value ({n_splits}-fold)')
+    ax.set_ylabel('Test AUC (outer fold)')
+    ax.set_xlabel('')
+    fig.savefig(f'{prefix}_boxplot.pdf', bbox_inches='tight')
+    plt.close(fig)
+
+    # ----- Save -----
+    results_path = (f'results/h3_tree_leaves_{model_name}_B{feature_mode_biom}'
+                    f'_M{feature_mode_mrf}_seed_{seed_split}.joblib')
+    joblib.dump({
+        'hypothesis': 'h3_tree_leaves',
+        'model_name': model_name,
+        'feature_mode_biom': feature_mode_biom,
+        'feature_mode_mrf': feature_mode_mrf,
+        'seed_split': seed_split,
+        'leaf_min_support': leaf_min_support,
+        'leaf_top_k': leaf_top_k,
+        'leaf_filter_method': leaf_filter_method,
+        'fold_results': fold_results,
+        'feature_frequency': dict(feat_counter),
+    }, results_path)
+    logger.info(f"Results saved to {results_path}")
+
+
+# =============================================================================
 # Hypothesis Dispatch
 # =============================================================================
 
 HYPOTHESES = {
     'h1_stacking': run_h1_stacking,
     'h2_forward': run_h2_forward_selection,
+    'h3_tree_leaves': run_h3_tree_leaves,
 }
 
 
@@ -657,15 +925,27 @@ if __name__ == '__main__':
         '--n_jobs', type=int, default=None,
         help="Number of parallel jobs (default: 1 for GPU, -1 for CPU)",
     )
+    # H3-specific arguments
+    parser.add_argument(
+        '--leaf_min_support', type=float, default=0.05,
+        help="H3: Minimum training sample support needed to keep a leaf (default: 0.05)",
+    )
+    parser.add_argument(
+        '--leaf_top_k', type=int, default=100,
+        help="H3: Number of top leaves to keep after support filtering, before L1 (default: 100)",
+    )
+    parser.add_argument(
+        '--leaf_filter_method', type=str, default='combined',
+        choices=['target', 'weight', 'combined'],
+        help="H3: Metric used to select top K leaves (target correlation, leaf weight, or combined score)",
+    )
     args = parser.parse_args()
 
-    n_jobs = args.n_jobs if args.n_jobs is not None else (1 if args.gpu else -1)
+    # Filter out argparse attributes to pass to hypothesis directly
+    kwargs = vars(args)
+    hypothesis = kwargs.pop('hypothesis')
+    # Use GPU rule for n_jobs if it wasn't specified
+    if kwargs.get('n_jobs') is None:
+        kwargs['n_jobs'] = 1 if kwargs.get('gpu') else -1
 
-    HYPOTHESES[args.hypothesis](
-        model_name=args.model_name,
-        seed_split=args.seed_split,
-        feature_mode_biom=args.feature_mode_biom,
-        feature_mode_mrf=args.feature_mode_mrf,
-        gpu=args.gpu,
-        n_jobs=n_jobs,
-    )
+    HYPOTHESES[hypothesis](**kwargs)
