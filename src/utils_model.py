@@ -41,6 +41,7 @@ from sklearn.compose import ColumnTransformer
 from sklearn.ensemble import RandomForestClassifier
 from sklearn.feature_selection import RFE
 from sklearn.metrics import roc_auc_score
+from sklearn.model_selection import cross_val_predict
 from sklearn.pipeline import Pipeline
 from sklearn import set_config
 import optuna
@@ -1090,6 +1091,219 @@ class FeatureImportanceScorer:
             vars_dcg[var] = dcg / ideal_dcg if ideal_dcg != 0 else 0
 
         return pd.Series(vars_dcg, name='nDCG').sort_values(ascending=False)
+
+
+# =============================================================================
+# Rule-based Feature Construction & Selection
+# =============================================================================
+
+def canonicalize_rule(rule_path):
+    """Convert a list of split conditions into a stable rule string."""
+    if not rule_path:
+        return 'TRUE'
+    return ' AND '.join(str(part).strip() for part in rule_path)
+
+
+def extract_rf_rule_matrix(model, X_train, X_test):
+    """
+    Build train/test binary rule-activation matrices from a fitted RF model.
+
+    Each terminal-node path becomes a candidate rule feature. Rule ids stay
+    tree-specific; the canonical human-readable rule text is stored separately
+    in the metadata dataframe.
+    """
+    train_columns = {}
+    test_columns = {}
+    metadata_rows = []
+
+    for tree_idx, estimator in enumerate(model.estimators_):
+        paths, nodes, _, _, _ = TreeRuleExtractor._get_sklearn_tree_rules(
+            estimator, X_train.columns
+        )
+        node_to_rule = {
+            int(node_id): canonicalize_rule(path)
+            for node_id, path in zip(nodes, paths)
+        }
+
+        train_leaf_ids = estimator.apply(X_train)
+        test_leaf_ids = estimator.apply(X_test)
+
+        for node_id, rule_text in node_to_rule.items():
+            rule_id = f'tree_{tree_idx}-leaf_{node_id}'
+            train_columns[rule_id] = (train_leaf_ids == node_id).astype(int)
+            test_columns[rule_id] = (test_leaf_ids == node_id).astype(int)
+            metadata_rows.append({
+                'rule_id': rule_id,
+                'tree': tree_idx,
+                'leaf_node': node_id,
+                'rule': rule_text,
+            })
+
+    rule_train = pd.DataFrame(train_columns, index=X_train.index)
+    rule_test = pd.DataFrame(test_columns, index=X_test.index)
+    metadata_df = pd.DataFrame(metadata_rows)
+    return rule_train, rule_test, metadata_df
+
+
+def deduplicate_rule_matrix(rule_train, rule_test, metadata_df):
+    """
+    Remove duplicate rule strings first, then duplicate train activations.
+    """
+    if rule_train.empty:
+        return rule_train, rule_test, metadata_df
+
+    metadata_unique = metadata_df.drop_duplicates(subset=['rule'], keep='first')
+    keep_rule_ids = metadata_unique['rule_id'].tolist()
+    rule_train = rule_train[keep_rule_ids]
+    rule_test = rule_test[keep_rule_ids]
+    metadata_df = metadata_unique.reset_index(drop=True)
+
+    duplicated_mask = rule_train.T.duplicated()
+    keep_cols = rule_train.columns[~duplicated_mask]
+    rule_train = rule_train[keep_cols]
+    rule_test = rule_test[keep_cols]
+    metadata_df = (
+        metadata_df.set_index('rule_id')
+        .loc[keep_cols]
+        .reset_index()
+    )
+    return rule_train, rule_test, metadata_df
+
+
+def filter_rules_by_support(rule_train, rule_test, metadata_df,
+                            min_support=0.05, max_support=0.5):
+    """
+    Keep rules whose train-fold prevalence falls within the given interval.
+    """
+    if rule_train.empty:
+        metadata_df = metadata_df.copy()
+        metadata_df['support'] = pd.Series(dtype=float)
+        return rule_train, rule_test, metadata_df
+
+    supports = rule_train.mean(axis=0)
+    keep_cols = supports[(supports >= min_support) & (supports <= max_support)].index
+    metadata_df = (
+        metadata_df.set_index('rule_id')
+        .assign(support=supports)
+        .loc[keep_cols]
+        .reset_index()
+    )
+    return rule_train[keep_cols], rule_test[keep_cols], metadata_df
+
+
+def cross_validated_auc(X, y, model_name, model_params, cv, groups=None,
+                        seed=0, cat_vars=None, gpu=False, n_jobs=-1):
+    """
+    Compute grouped cross-validated ROC AUC for a fixed feature matrix/model.
+    """
+    model = create_model(model_name, seed=seed, cat_vars=cat_vars, gpu=gpu)
+    if model_name in ('rf', 'xgboost'):
+        model.set_params(n_jobs=n_jobs)
+    model.set_params(**model_params)
+    X_enc = _encode_categoricals(X, model_name)
+    oof_proba = cross_val_predict(
+        model, X_enc, y,
+        cv=cv, groups=groups,
+        method='predict_proba', n_jobs=n_jobs,
+    )[:, 1]
+    return roc_auc_score(y, oof_proba)
+
+
+def score_rules_by_incremental_auc(X_base_train, rule_train, y_train,
+                                   model_name, model_params, cv, groups=None,
+                                   seed=0, cat_vars=None, gpu=False, n_jobs=-1):
+    """
+    Score candidate rules by inner-CV AUC gain over the BIOM baseline.
+    """
+    baseline_auc = cross_validated_auc(
+        X_base_train, y_train,
+        model_name=model_name, model_params=model_params,
+        cv=cv, groups=groups, seed=seed,
+        cat_vars=cat_vars, gpu=gpu, n_jobs=n_jobs,
+    )
+
+    rows = []
+    for rule_id in tqdm(rule_train.columns, desc='Screening candidate rules', unit='rule'):
+        try:
+            candidate_auc = cross_validated_auc(
+                pd.concat([X_base_train, rule_train[[rule_id]]], axis=1),
+                y_train,
+                model_name=model_name, model_params=model_params,
+                cv=cv, groups=groups, seed=seed,
+                cat_vars=cat_vars, gpu=gpu, n_jobs=n_jobs,
+            )
+        except Exception as exc:
+            logger.warning(f"Rule '{rule_id}' failed during screening: {exc}")
+            candidate_auc = np.nan
+        rows.append({
+            'rule_id': rule_id,
+            'candidate_auc': candidate_auc,
+            'delta_auc': candidate_auc - baseline_auc if pd.notna(candidate_auc) else np.nan,
+        })
+
+    scores_df = pd.DataFrame(rows).sort_values(
+        by='delta_auc', ascending=False, na_position='last'
+    )
+    return baseline_auc, scores_df
+
+
+def forward_select_rules_by_auc(X_base_train, rule_train, y_train,
+                                candidate_rule_ids, model_name, model_params,
+                                cv, groups=None, seed=0, cat_vars=None,
+                                gpu=False, n_jobs=-1, auc_threshold=0.002,
+                                max_selected=10):
+    """
+    Greedily add rules that improve inner-CV AUC over the current set.
+    """
+    current_auc = cross_validated_auc(
+        X_base_train, y_train,
+        model_name=model_name, model_params=model_params,
+        cv=cv, groups=groups, seed=seed,
+        cat_vars=cat_vars, gpu=gpu, n_jobs=n_jobs,
+    )
+    selected = []
+    history = []
+    remaining = list(candidate_rule_ids)
+
+    while remaining and len(selected) < max_selected:
+        best_rule = None
+        best_auc = current_auc
+
+        for rule_id in remaining:
+            candidate_cols = selected + [rule_id]
+            try:
+                candidate_auc = cross_validated_auc(
+                    pd.concat([X_base_train, rule_train[candidate_cols]], axis=1),
+                    y_train,
+                    model_name=model_name, model_params=model_params,
+                    cv=cv, groups=groups, seed=seed,
+                    cat_vars=cat_vars, gpu=gpu, n_jobs=n_jobs,
+                )
+            except Exception as exc:
+                logger.warning(
+                    f"Rule set {candidate_cols} failed during forward selection: {exc}"
+                )
+                continue
+
+            if candidate_auc > best_auc:
+                best_auc = candidate_auc
+                best_rule = rule_id
+
+        gain = best_auc - current_auc
+        if best_rule is None or gain < auc_threshold:
+            break
+
+        selected.append(best_rule)
+        remaining.remove(best_rule)
+        current_auc = best_auc
+        history.append({
+            'step': len(selected),
+            'rule_id': best_rule,
+            'oof_auc': best_auc,
+            'gain': gain,
+        })
+
+    return selected, history, current_auc
 
 
 # =============================================================================
