@@ -36,7 +36,6 @@ from sklearn.model_selection import StratifiedGroupKFold, cross_val_predict
 from src.utils_model import (
     WoETransformer,
     _encode_categoricals,
-    cross_validated_auc,
     create_model,
     deduplicate_rule_matrix,
     extract_rf_rule_matrix,
@@ -44,7 +43,7 @@ from src.utils_model import (
     feature_engineering,
     filter_rules_by_support,
     forward_select_rules_by_auc,
-    score_rules_by_incremental_auc,
+    score_rules_with_base_predictions,
     train_model,
 )
 
@@ -1254,9 +1253,16 @@ def run_h4_rulefit_rf(model_name, seed_split=None,
 
         X_biom_train_enc = _encode_categoricals(X_biom_train, model_name)
         X_biom_test_enc = _encode_categoricals(X_biom_test, model_name)
+        biom_oof = cross_val_predict(
+            biom_model, X_biom_train_enc, y_train,
+            cv=biom_inner_splits, groups=groups_train,
+            method='predict_proba', n_jobs=n_jobs,
+        )[:, 1]
+        baseline_oof_auc = roc_auc_score(y_train, biom_oof)
         biom_test_proba = biom_model.predict_proba(X_biom_test_enc)[:, 1]
         biom_test_auc = roc_auc_score(y_test, biom_test_proba)
         logger.info(f"  BIOM-only test AUC: {biom_test_auc:.4f}")
+        logger.info(f"  Cached BIOM inner-CV AUC: {baseline_oof_auc:.4f}")
 
         logger.info("Training shallow RF on MRF for rule extraction...")
         X_mrf_train_rf = _encode_categoricals(X_mrf_train, 'rf')
@@ -1293,12 +1299,6 @@ def run_h4_rulefit_rf(model_name, seed_split=None,
 
         if rule_train.empty:
             logger.info("  No candidate rules survived filtering. Keeping BIOM-only model.")
-            baseline_oof_auc = cross_validated_auc(
-                X_biom_train, y_train,
-                model_name=model_name, model_params=biom_study.best_params,
-                cv=cv_inner_fold, groups=groups_train, seed=seed_rf,
-                cat_vars=cat_biom or None, gpu=gpu, n_jobs=n_jobs,
-            )
             selected_rule_ids = []
             selected_rules = []
             selection_history = []
@@ -1306,12 +1306,10 @@ def run_h4_rulefit_rf(model_name, seed_split=None,
             final_test_auc = biom_test_auc
             final_oof_auc = baseline_oof_auc
         else:
-            logger.info("Screening rules by incremental inner-CV AUC over BIOM...")
-            baseline_oof_auc, screening_df = score_rules_by_incremental_auc(
-                X_biom_train, rule_train, y_train,
-                model_name=model_name, model_params=biom_study.best_params,
-                cv=cv_inner_fold, groups=groups_train, seed=seed_rf,
-                cat_vars=cat_biom or None, gpu=gpu, n_jobs=n_jobs,
+            logger.info("Cheap-screening rules with cached BIOM OOF scores...")
+            baseline_oof_auc, screening_df = score_rules_with_base_predictions(
+                biom_oof, rule_train, y_train,
+                cv_splits=biom_inner_splits, seed=seed_rf,
             )
             screening_df = screening_df.merge(
                 rule_meta[['rule_id', 'rule', 'support']],
@@ -1319,12 +1317,15 @@ def run_h4_rulefit_rf(model_name, seed_split=None,
             )
 
             top_rule_ids = screening_df.dropna(subset=['delta_auc'])['rule_id'].head(rule_top_k).tolist()
-            logger.info(f"  Retaining top {len(top_rule_ids)} screened rules for forward selection.")
+            logger.info(
+                f"  Retaining top {len(top_rule_ids)} cheap-screened rules "
+                "for expensive forward selection."
+            )
 
             selected_rule_ids, selection_history, final_oof_auc = forward_select_rules_by_auc(
                 X_biom_train, rule_train, y_train, top_rule_ids,
                 model_name=model_name, model_params=biom_study.best_params,
-                cv=cv_inner_fold, groups=groups_train, seed=seed_rf,
+                cv=biom_inner_splits, groups=groups_train, seed=seed_rf,
                 cat_vars=cat_biom or None, gpu=gpu, n_jobs=n_jobs,
                 auc_threshold=rule_auc_threshold,
                 max_selected=rule_max_selected,

@@ -40,6 +40,7 @@ from sklearn.base import BaseEstimator, ClassifierMixin, TransformerMixin
 from sklearn.compose import ColumnTransformer
 from sklearn.ensemble import RandomForestClassifier
 from sklearn.feature_selection import RFE
+from sklearn.linear_model import LogisticRegression
 from sklearn.metrics import roc_auc_score
 from sklearn.model_selection import cross_val_predict
 from sklearn.pipeline import Pipeline
@@ -1248,6 +1249,47 @@ def score_rules_by_incremental_auc(X_base_train, rule_train, y_train,
         except Exception as exc:
             logger.warning(f"Rule '{rule_id}' failed during screening: {exc}")
             candidate_auc = np.nan
+        rows.append({
+            'rule_id': rule_id,
+            'candidate_auc': candidate_auc,
+            'delta_auc': candidate_auc - baseline_auc if pd.notna(candidate_auc) else np.nan,
+        })
+
+    scores_df = pd.DataFrame(rows).sort_values(
+        by='delta_auc', ascending=False, na_position='last'
+    )
+    return baseline_auc, scores_df
+
+
+def score_rules_with_base_predictions(base_scores, rule_train, y_train,
+                                      cv_splits, seed=0):
+    """
+    Cheap rule screening using cached BIOM OOF scores plus one rule at a time.
+
+    A small logistic regression is fit within the provided CV splits on the
+    2-column design matrix ``[base_scores, rule_indicator]``.
+    """
+    y_arr = y_train.values.squeeze() if hasattr(y_train, 'values') else np.asarray(y_train)
+    base_arr = np.asarray(base_scores)
+    baseline_auc = roc_auc_score(y_arr, base_arr)
+
+    rows = []
+    for rule_id in tqdm(rule_train.columns, desc='Cheap screening (BIOM score + rule)', unit='rule'):
+        X_small = np.column_stack([base_arr, rule_train[rule_id].to_numpy()])
+        oof_pred = np.zeros_like(base_arr, dtype=float)
+        failed = False
+
+        for train_idx, val_idx in cv_splits:
+            model = LogisticRegression(random_state=seed, max_iter=1000)
+            try:
+                model.fit(X_small[train_idx], y_arr[train_idx])
+                oof_pred[val_idx] = model.predict_proba(X_small[val_idx])[:, 1]
+            except Exception as exc:
+                logger.warning(f"Rule '{rule_id}' failed during cheap screening: {exc}")
+                failed = True
+                break
+
+        candidate_auc = np.nan if failed else roc_auc_score(y_arr, oof_pred)
         rows.append({
             'rule_id': rule_id,
             'candidate_auc': candidate_auc,
