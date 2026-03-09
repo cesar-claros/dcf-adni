@@ -1120,6 +1120,7 @@ def run_h4_rulefit_rf(model_name, seed_split=None,
                       feature_mode_biom='raw_woe',
                       feature_mode_mrf='raw_woe',
                       config_path=None, gpu=False, n_jobs=-1,
+                      forward_n_jobs=None,
                       rule_rf_n_estimators=300, rule_rf_max_depth=3,
                       rule_rf_min_samples_leaf=0.05,
                       rule_rf_max_features='sqrt',
@@ -1164,6 +1165,9 @@ def run_h4_rulefit_rf(model_name, seed_split=None,
         f"support=[{rule_support_min}, {rule_support_max}], top_k={rule_top_k}, "
         f"auc_threshold={rule_auc_threshold}, max_selected={rule_max_selected}"
     )
+    if forward_n_jobs is None:
+        forward_n_jobs = 4 if n_jobs == -1 else max(1, n_jobs)
+    logger.info(f"Forward-selection workers: {forward_n_jobs}")
 
     cv_inner = StratifiedGroupKFold(
         n_splits=n_splits, shuffle=True, random_state=seed_cv,
@@ -1329,7 +1333,8 @@ def run_h4_rulefit_rf(model_name, seed_split=None,
                 X_biom_train, rule_train, y_train, top_rule_ids,
                 model_name=model_name, model_params=biom_study.best_params,
                 cv=biom_inner_splits, groups=groups_train, seed=seed_rf,
-                cat_vars=cat_biom or None, gpu=gpu, n_jobs=n_jobs,
+                cat_vars=cat_biom or None, gpu=gpu, n_jobs=1,
+                forward_n_jobs=forward_n_jobs,
                 auc_threshold=rule_auc_threshold,
                 max_selected=rule_max_selected,
             )
@@ -1443,6 +1448,7 @@ def run_h4_rulefit_rf(model_name, seed_split=None,
         'rule_rf_max_depth': rule_rf_max_depth,
         'rule_rf_min_samples_leaf': rule_rf_min_samples_leaf,
         'rule_rf_max_features': rule_rf_max_features,
+        'forward_n_jobs': forward_n_jobs,
         'rule_support_min': rule_support_min,
         'rule_support_max': rule_support_max,
         'rule_top_k': rule_top_k,
@@ -1541,6 +1547,10 @@ if __name__ == '__main__':
         '--rule_rf_max_features', type=str, default='sqrt',
         choices=['sqrt', 'log2'],
         help="H4: RF rule-generator max_features strategy (default: sqrt)",
+    )
+    parser.add_argument(
+        '--forward_n_jobs', type=int, default=None,
+        help="H4: Number of parallel workers for expensive forward-selection candidate evaluation (default: 4 if n_jobs=-1 else n_jobs)",
     )
     parser.add_argument(
         '--rule_support_min', type=float, default=0.05,

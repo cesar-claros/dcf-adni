@@ -1312,8 +1312,8 @@ def score_rules_with_base_predictions(base_scores, rule_train, y_train,
 def forward_select_rules_by_auc(X_base_train, rule_train, y_train,
                                 candidate_rule_ids, model_name, model_params,
                                 cv, groups=None, seed=0, cat_vars=None,
-                                gpu=False, n_jobs=-1, auc_threshold=0.002,
-                                max_selected=10):
+                                gpu=False, n_jobs=1, forward_n_jobs=1,
+                                auc_threshold=0.002, max_selected=10):
     """
     Greedily add rules that improve inner-CV AUC over the current set.
     """
@@ -1330,15 +1330,15 @@ def forward_select_rules_by_auc(X_base_train, rule_train, y_train,
     while remaining and len(selected) < max_selected:
         best_rule = None
         best_auc = current_auc
-        evaluated_count = 0
 
         logger.info(
             "Forward selection step %d: evaluating %d candidate rule sets "
-            "(selected=%d, remaining=%d)",
+            "(selected=%d, remaining=%d, workers=%d)",
             len(selected) + 1, len(remaining), len(selected), len(remaining),
+            forward_n_jobs,
         )
 
-        for rule_id in remaining:
+        def _evaluate_rule(rule_id):
             candidate_cols = selected + [rule_id]
             try:
                 candidate_auc = cross_validated_auc(
@@ -1352,8 +1352,21 @@ def forward_select_rules_by_auc(X_base_train, rule_train, y_train,
                 logger.warning(
                     f"Rule set {candidate_cols} failed during forward selection: {exc}"
                 )
-                continue
+                return rule_id, np.nan
 
+            return rule_id, candidate_auc
+
+        if forward_n_jobs == 1:
+            results = [_evaluate_rule(rule_id) for rule_id in remaining]
+        else:
+            results = Parallel(n_jobs=forward_n_jobs, prefer='threads')(
+                delayed(_evaluate_rule)(rule_id) for rule_id in remaining
+            )
+
+        evaluated_count = 0
+        for rule_id, candidate_auc in results:
+            if pd.isna(candidate_auc):
+                continue
             evaluated_count += 1
             if candidate_auc > best_auc:
                 best_auc = candidate_auc
