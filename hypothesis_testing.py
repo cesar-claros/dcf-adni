@@ -1294,6 +1294,9 @@ def run_h4_rulefit_rf(model_name, seed_split=None,
             rule_train, rule_test, rule_meta,
             min_support=rule_support_min, max_support=rule_support_max,
         )
+        for col in ['rule_id', 'rule', 'support']:
+            if col not in rule_meta.columns:
+                rule_meta[col] = pd.Series(dtype=object if col != 'support' else float)
         filtered_rule_count = int(rule_train.shape[1])
         logger.info(f"  {filtered_rule_count} rule indicators remain after support filtering.")
 

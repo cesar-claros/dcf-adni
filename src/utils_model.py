@@ -1126,8 +1126,11 @@ def extract_rf_rule_matrix(model, X_train, X_test):
             for node_id, path in zip(nodes, paths)
         }
 
-        train_leaf_ids = estimator.apply(X_train)
-        test_leaf_ids = estimator.apply(X_test)
+        # Pass numpy arrays to the underlying sklearn tree estimators to avoid
+        # feature-name warnings when the forest was fitted through sklearn's
+        # internal array validation path.
+        train_leaf_ids = estimator.apply(X_train.to_numpy())
+        test_leaf_ids = estimator.apply(X_test.to_numpy())
 
         for node_id, rule_text in node_to_rule.items():
             rule_id = f'tree_{tree_idx}-leaf_{node_id}'
@@ -1201,7 +1204,11 @@ def filter_rules_by_support(rule_train, rule_test, metadata_df,
     keep_cols = supports[(supports >= min_support) & (supports <= max_support)].index
     metadata_df = metadata_df.set_index('rule_id')
     metadata_df['support'] = supports.reindex(metadata_df.index)
-    metadata_df = metadata_df.loc[metadata_df.index.intersection(keep_cols)].reset_index()
+    keep_index = pd.Index(
+        metadata_df.index.intersection(keep_cols),
+        name='rule_id',
+    )
+    metadata_df = metadata_df.loc[keep_index].reset_index()
     return rule_train[keep_cols], rule_test[keep_cols], metadata_df
 
 
