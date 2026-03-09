@@ -279,14 +279,19 @@ class WoETransformer:
             binning_fit_params=self.woe_dict,
         )
         X_train_WOE = self.binning_process_.fit_transform(
-            X_train_raw, y_train, metric='woe'
+            X_train_raw, y_train, metric='woe', metric_missing='empirical'
         )
         X_train_WOE = -1 * X_train_WOE.add_suffix('_WOE')
 
-        X_test_WOE = self.binning_process_.transform(X_test_raw, metric='woe')
+        X_test_WOE = self.binning_process_.transform(
+            X_test_raw, metric='woe', metric_missing='empirical'
+        )
         X_test_WOE = -1 * X_test_WOE.add_suffix('_WOE')
 
-        # Ensure no NaNs exist post-transformation in the WoE columns, replace with 0
+        # Safety net: with metric_missing='empirical', optbinning outputs NaN for a
+        # feature only when there were zero missing-value cases in the training fold
+        # (so no empirical WoE could be learned for the missing bin).  Fall back to
+        # WoE=0 for those edge cases and log a warning.
         for name, df in [('Train', X_train_WOE), ('Test', X_test_WOE)]:
             nan_counts = df.isna().sum()
             cols_with_nans = nan_counts[nan_counts > 0]

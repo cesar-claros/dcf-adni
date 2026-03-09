@@ -7,6 +7,7 @@ outputs/
 plots/
 catboost_info/
 journal.log
+journal.log.lock
 results/
 slurm_script.qs
 R*.out

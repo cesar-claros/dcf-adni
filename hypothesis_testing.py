@@ -48,6 +48,74 @@ logger = logging.getLogger(__name__)
 _CONFIG_PATH = Path(__file__).parent / 'configs' / 'model_training.yaml'
 
 
+# =============================================================================
+# Helpers for pre-loaded CV splits
+# =============================================================================
+
+class _PrecomputedSplitter:
+    """Wraps a pre-computed list of (train_idx, val_idx) index pairs.
+
+    Provides the minimal sklearn CV splitter interface required by
+    ``train_model`` and ``cross_val_predict``.  All arguments to ``split``
+    are ignored; the stored splits are returned as-is.
+    """
+
+    def __init__(self, splits):
+        self._splits = list(splits)
+        self.n_splits = len(self._splits)
+
+    def split(self, X=None, y=None, groups=None):
+        return iter(self._splits)
+
+    def get_n_splits(self, X=None, y=None, groups=None):
+        return self.n_splits
+
+
+def _load_splits(splits_file):
+    """Load pre-computed outer fold splits from a hypothesis results file.
+
+    Accepts joblib output from any hypothesis (h1, h2, or h3).  The file
+    must contain either a ``'fold_results'`` key (H2/H3 format) or a
+    ``'fold_splits'`` key (H1 format).  Each fold entry must contain
+    ``'train_index'``, ``'test_index'``, and ``'biom_inner_splits'``.
+
+    Args:
+        splits_file (str or Path): Path to the ``.joblib`` results file.
+
+    Returns:
+        list[dict]: One dict per fold with keys ``'fold'``, ``'train_index'``,
+            ``'test_index'``, and ``'inner_splits'``.
+
+    Raises:
+        KeyError: If the expected keys are missing from the file.
+    """
+    data = joblib.load(splits_file)
+    fold_list = data.get('fold_results') or data.get('fold_splits')
+    if fold_list is None:
+        raise KeyError(
+            f"Splits file '{splits_file}' contains neither 'fold_results' nor "
+            f"'fold_splits'. Available keys: {list(data.keys())}"
+        )
+    result = []
+    for fr in fold_list:
+        inner = fr.get('biom_inner_splits') or fr.get('mrf_inner_splits')
+        if inner is None:
+            raise KeyError(
+                f"Fold {fr.get('fold')} entry has no 'biom_inner_splits' or "
+                "'mrf_inner_splits' key."
+            )
+        result.append({
+            'fold': fr['fold'],
+            'train_index': fr['train_index'],
+            'test_index': fr['test_index'],
+            'inner_splits': inner,
+        })
+    logger.info(
+        f"Loaded {len(result)} pre-computed fold splits from '{splits_file}'."
+    )
+    return result
+
+
 def _load_config(config_path=None):
     """Load pipeline configuration from YAML."""
     path = Path(config_path) if config_path else _CONFIG_PATH
@@ -78,9 +146,9 @@ def _filter_features(df, mode):
         return df
 
 
-def run_h1_stacking(model_name, seed_split, feature_mode_biom='raw_woe',
+def run_h1_stacking(model_name, seed_split=None, feature_mode_biom='raw_woe',
                     feature_mode_mrf='raw_woe', config_path=None,
-                    gpu=False, n_jobs=-1, **kwargs):
+                    gpu=False, n_jobs=-1, splits_file=None, **kwargs):
     """
     Test incremental value of MRF features via stacking.
 
@@ -94,12 +162,17 @@ def run_h1_stacking(model_name, seed_split, feature_mode_biom='raw_woe',
 
     Args:
         model_name (str): Base model type (``'catboost'``, ``'xgboost'``, ``'rf'``).
-        seed_split (int): Seed for outer StratifiedGroupKFold.
+        seed_split (int or None): Seed for outer StratifiedGroupKFold.
+            Mutually exclusive with ``splits_file``.
         feature_mode_biom (str): Features to use for BIOM (raw, woe, raw_woe).
         feature_mode_mrf (str): Features to use for MRF (raw, woe, raw_woe).
         config_path (str or None): Path to YAML config.
         gpu (bool): Enable GPU training for CatBoost.
         n_jobs (int): Number of parallel jobs.
+        splits_file (str or None): Path to a joblib results file whose
+            pre-computed outer fold indices and inner splits are reused
+            verbatim.  When provided ``seed_split`` is used only for
+            output-file naming (and may be ``None``).
     """
     cfg = _load_config(config_path)
     pipeline_cfg = cfg.get('pipeline', {})
@@ -129,10 +202,6 @@ def run_h1_stacking(model_name, seed_split, feature_mode_biom='raw_woe',
     ).set_index('subject_id')
     dataset_df = feature_engineering(joint_dataset_df)
 
-    # Outer CV loop
-    outer_cv = StratifiedGroupKFold(
-        n_splits=n_splits, shuffle=True, random_state=seed_split,
-    )
     X_all = dataset_df.drop(['transition'], axis='columns')
     y_all = dataset_df['transition']
     groups_all = dataset_df['group']
@@ -140,14 +209,41 @@ def run_h1_stacking(model_name, seed_split, feature_mode_biom='raw_woe',
     fold_aucs = {'biom': [], 'mrf': [], 'stacked': []}
     fold_splits = []
 
-    for k, (train_index, test_index) in enumerate(tqdm(
-        outer_cv.split(X_all, y_all, groups_all),
+    # Build the outer iteration source and the output label
+    if splits_file is not None:
+        _preloaded = _load_splits(splits_file)
+        n_splits = len(_preloaded)
+        split_label = Path(splits_file).stem
+        _outer_iter = (
+            (f['train_index'], f['test_index'], f['inner_splits'])
+            for f in _preloaded
+        )
+    else:
+        outer_cv = StratifiedGroupKFold(
+            n_splits=n_splits, shuffle=True, random_state=seed_split,
+        )
+        split_label = str(seed_split)
+        _outer_iter = (
+            (train_idx, test_idx, None)
+            for train_idx, test_idx in outer_cv.split(X_all, y_all, groups_all)
+        )
+
+    for k, (train_index, test_index, _preloaded_inner) in enumerate(tqdm(
+        _outer_iter,
         total=n_splits, desc='Outer CV folds', unit='fold',
     )):
         logger.info(f"\n{'='*60}")
         logger.info(f"Outer fold {k+1}/{n_splits}: "
                     f"Train={len(train_index)}, Test={len(test_index)}")
         logger.info(f"{'='*60}")
+
+        # Use pre-loaded inner splits when available, otherwise fall back to
+        # the freshly-generated StratifiedGroupKFold splitter.
+        cv_inner_fold = (
+            _PrecomputedSplitter(_preloaded_inner)
+            if _preloaded_inner is not None
+            else cv_inner
+        )
 
         # Fresh WoE transformers per fold (no data leakage to outer test)
         woe_biom = WoETransformer(woe_dict_biom, categorical_biom)
@@ -186,7 +282,7 @@ def run_h1_stacking(model_name, seed_split, feature_mode_biom='raw_woe',
             X_biom_train, y_train, X_biom_test, y_test,
             model=model_name, seed_rf=seed_rf,
             seed_bayes=seed_bayes + 20, n_iter=n_iter,
-            cv=cv_inner, groups=groups_train,
+            cv=cv_inner_fold, groups=groups_train,
             cat_vars=cat_biom or None, n_jobs=n_jobs, gpu=gpu,
         )
         # OOF predictions on training set (for stacking features)
@@ -195,7 +291,7 @@ def run_h1_stacking(model_name, seed_split, feature_mode_biom='raw_woe',
         X_biom_test_enc = _encode_categoricals(X_biom_test, model_name)
         biom_oof = cross_val_predict(
             biom_model, X_biom_train_enc, y_train,
-            cv=cv_inner, groups=groups_train,
+            cv=cv_inner_fold, groups=groups_train,
             method='predict_proba', n_jobs=n_jobs,
         )[:, 1]
         # Test set predictions
@@ -209,14 +305,14 @@ def run_h1_stacking(model_name, seed_split, feature_mode_biom='raw_woe',
             X_mrf_train, y_train, X_mrf_test, y_test,
             model=model_name, seed_rf=seed_rf,
             seed_bayes=seed_bayes + 30, n_iter=n_iter,
-            cv=cv_inner, groups=groups_train,
+            cv=cv_inner_fold, groups=groups_train,
             cat_vars=cat_mrf or None, n_jobs=n_jobs, gpu=gpu,
         )
         X_mrf_train_enc = _encode_categoricals(X_mrf_train, model_name)
         X_mrf_test_enc = _encode_categoricals(X_mrf_test, model_name)
         mrf_oof = cross_val_predict(
             mrf_model, X_mrf_train_enc, y_train,
-            cv=cv_inner, groups=groups_train,
+            cv=cv_inner_fold, groups=groups_train,
             method='predict_proba', n_jobs=n_jobs,
         )[:, 1]
         mrf_test_proba = mrf_model.predict_proba(X_mrf_test_enc)[:, 1]
@@ -260,7 +356,7 @@ def run_h1_stacking(model_name, seed_split, feature_mode_biom='raw_woe',
         logger.info(f"  {name:>8s}: AUC = {np.mean(aucs):.3f} ± {np.std(aucs):.3f}")
 
     # ----- Boxplot -----
-    prefix = f'plots/h1_stacking_{model_name}_B{feature_mode_biom}_M{feature_mode_mrf}_seed_{seed_split}'
+    prefix = f'plots/h1_stacking_{model_name}_B{feature_mode_biom}_M{feature_mode_mrf}_seed_{split_label}'
     auc_rows = []
     for name in ['biom', 'mrf', 'stacked']:
         for auc in fold_aucs[name]:
@@ -279,13 +375,15 @@ def run_h1_stacking(model_name, seed_split, feature_mode_biom='raw_woe',
     logger.info(f"Plot saved to {prefix}_boxplot.pdf")
 
     # ----- Save results -----
-    results_path = f'results/h1_stacking_{model_name}_B{feature_mode_biom}_M{feature_mode_mrf}_seed_{seed_split}.joblib'
+    results_path = f'results/h1_stacking_{model_name}_B{feature_mode_biom}_M{feature_mode_mrf}_seed_{split_label}.joblib'
     joblib.dump({
         'hypothesis': 'h1_stacking',
         'model_name': model_name,
         'feature_mode_biom': feature_mode_biom,
         'feature_mode_mrf': feature_mode_mrf,
         'seed_split': seed_split,
+        'splits_file': splits_file,
+        'split_label': split_label,
         'n_folds': n_splits,
         'fold_aucs': fold_aucs,
         'fold_splits': fold_splits,
@@ -297,11 +395,11 @@ def run_h1_stacking(model_name, seed_split, feature_mode_biom='raw_woe',
 # Hypothesis 2: Conditional MRF Feature Selection (Forward Selection)
 # =============================================================================
 
-def run_h2_forward_selection(model_name, seed_split,
+def run_h2_forward_selection(model_name, seed_split=None,
                              feature_mode_biom='raw_woe',
                              feature_mode_mrf='raw_woe',
                              config_path=None, gpu=False, n_jobs=-1,
-                             auc_threshold=0.005, **kwargs):
+                             auc_threshold=0.005, splits_file=None, **kwargs):
     """
     Test which specific MRF features add incremental value over BIOM.
 
@@ -314,13 +412,18 @@ def run_h2_forward_selection(model_name, seed_split,
 
     Args:
         model_name (str): Base model type.
-        seed_split (int): Seed for outer StratifiedGroupKFold.
+        seed_split (int or None): Seed for outer StratifiedGroupKFold.
+            Mutually exclusive with ``splits_file``.
         feature_mode_biom (str): Features to use for BIOM (raw, woe, raw_woe).
         feature_mode_mrf (str): Features to use for MRF (raw, woe, raw_woe).
         config_path (str or None): Path to YAML config.
         gpu (bool): Enable GPU training for CatBoost.
         n_jobs (int): Number of parallel jobs.
         auc_threshold (float): Minimum AUC gain to keep a feature.
+        splits_file (str or None): Path to a joblib results file whose
+            pre-computed outer fold indices and inner splits are reused
+            verbatim.  When provided ``seed_split`` is used only for
+            output-file naming (and may be ``None``).
     """
     cfg = _load_config(config_path)
     pipeline_cfg = cfg.get('pipeline', {})
@@ -350,22 +453,44 @@ def run_h2_forward_selection(model_name, seed_split,
     ).set_index('subject_id')
     dataset_df = feature_engineering(joint_dataset_df)
 
-    outer_cv = StratifiedGroupKFold(
-        n_splits=n_splits, shuffle=True, random_state=seed_split,
-    )
     X_all = dataset_df.drop(['transition'], axis='columns')
     y_all = dataset_df['transition']
     groups_all = dataset_df['group']
 
     fold_results = []
 
-    for k, (train_index, test_index) in enumerate(tqdm(
-        outer_cv.split(X_all, y_all, groups_all),
+    # Build outer iteration source and output label
+    if splits_file is not None:
+        _preloaded = _load_splits(splits_file)
+        n_splits = len(_preloaded)
+        split_label = Path(splits_file).stem
+        _outer_iter = (
+            (f['train_index'], f['test_index'], f['inner_splits'])
+            for f in _preloaded
+        )
+    else:
+        outer_cv = StratifiedGroupKFold(
+            n_splits=n_splits, shuffle=True, random_state=seed_split,
+        )
+        split_label = str(seed_split)
+        _outer_iter = (
+            (train_idx, test_idx, None)
+            for train_idx, test_idx in outer_cv.split(X_all, y_all, groups_all)
+        )
+
+    for k, (train_index, test_index, _preloaded_inner) in enumerate(tqdm(
+        _outer_iter,
         total=n_splits, desc='Outer CV folds', unit='fold',
     )):
         logger.info(f"\n{'='*60}")
         logger.info(f"Outer fold {k+1}/{n_splits}")
         logger.info(f"{'='*60}")
+
+        cv_inner_fold = (
+            _PrecomputedSplitter(_preloaded_inner)
+            if _preloaded_inner is not None
+            else cv_inner
+        )
 
         # Fresh WoE per fold
         woe_biom = WoETransformer(woe_dict_biom, categorical_biom)
@@ -405,7 +530,7 @@ def run_h2_forward_selection(model_name, seed_split,
             X_biom_train, y_train, X_biom_test, y_test,
             model=model_name, seed_rf=seed_rf,
             seed_bayes=seed_bayes + 20, n_iter=n_iter,
-            cv=cv_inner, groups=groups_train,
+            cv=cv_inner_fold, groups=groups_train,
             cat_vars=cat_biom or None, n_jobs=n_jobs, gpu=gpu,
         )
         best_params = biom_study.best_params
@@ -417,7 +542,7 @@ def run_h2_forward_selection(model_name, seed_split,
         # BIOM-only OOF AUC (baseline)
         biom_oof = cross_val_predict(
             biom_model, X_biom_train_enc, y_train,
-            cv=cv_inner, groups=groups_train,
+            cv=cv_inner_fold, groups=groups_train,
             method='predict_proba', n_jobs=n_jobs,
         )[:, 1]
         baseline_auc = roc_auc_score(y_train, biom_oof)
@@ -464,7 +589,7 @@ def run_h2_forward_selection(model_name, seed_split,
                 try:
                     oof_proba = cross_val_predict(
                         m, X_combined_train_enc, y_train,
-                        cv=cv_inner, groups=groups_train,
+                        cv=cv_inner_fold, groups=groups_train,
                         method='predict_proba', n_jobs=n_jobs,
                     )[:, 1]
                     candidate_auc = roc_auc_score(y_train, oof_proba)
@@ -558,7 +683,7 @@ def run_h2_forward_selection(model_name, seed_split,
         logger.info(f"    {feat}: {count}/{n_splits} folds")
 
     # ----- Plots -----
-    prefix = f'plots/h2_forward_{model_name}_B{feature_mode_biom}_M{feature_mode_mrf}_seed_{seed_split}'
+    prefix = f'plots/h2_forward_{model_name}_B{feature_mode_biom}_M{feature_mode_mrf}_seed_{split_label}'
 
     # 1. Boxplot: BIOM vs BIOM+selected
     auc_rows = []
@@ -597,13 +722,15 @@ def run_h2_forward_selection(model_name, seed_split,
 
     # ----- Save -----
     results_path = (f'results/h2_forward_{model_name}_B{feature_mode_biom}'
-                    f'_M{feature_mode_mrf}_seed_{seed_split}.joblib')
+                    f'_M{feature_mode_mrf}_seed_{split_label}.joblib')
     joblib.dump({
         'hypothesis': 'h2_forward',
         'model_name': model_name,
         'feature_mode_biom': feature_mode_biom,
         'feature_mode_mrf': feature_mode_mrf,
         'seed_split': seed_split,
+        'splits_file': splits_file,
+        'split_label': split_label,
         'auc_threshold': auc_threshold,
         'fold_results': fold_results,
         'feature_frequency': dict(feat_counter),
@@ -615,12 +742,13 @@ def run_h2_forward_selection(model_name, seed_split,
 # Hypothesis 3: Non-linear MRF interactions via Tree Leaves
 # =============================================================================
 
-def run_h3_tree_leaves(model_name, seed_split,
+def run_h3_tree_leaves(model_name, seed_split=None,
                        feature_mode_biom='raw_woe',
                        feature_mode_mrf='raw_woe',
                        config_path=None, gpu=False, n_jobs=-1,
                        leaf_min_support=0.05, leaf_top_k=100,
-                       leaf_filter_method='combined', **kwargs):
+                       leaf_filter_method='combined',
+                       splits_file=None, **kwargs):
     """
     Test incremental value of MRF non-linear baseline expansion via tree leaves.
 
@@ -631,6 +759,15 @@ def run_h3_tree_leaves(model_name, seed_split,
     5. Fit L1-regularized Logistic Regression on [BIOM + selected_leaves]
        to enforce sparsity and find stable indicators.
     6. Evaluate combined model on held-out outer test fold.
+
+    Args:
+        model_name (str): Must be ``'catboost'``.
+        seed_split (int or None): Seed for outer StratifiedGroupKFold.
+            Mutually exclusive with ``splits_file``.
+        splits_file (str or None): Path to a joblib results file whose
+            pre-computed outer fold indices and inner splits are reused
+            verbatim.  When provided ``seed_split`` is used only for
+            output-file naming (and may be ``None``).
     """
     if model_name != 'catboost':
         raise ValueError("H3 tree leaves extraction is currently implemented "
@@ -664,9 +801,6 @@ def run_h3_tree_leaves(model_name, seed_split,
     ).set_index('subject_id')
     dataset_df = feature_engineering(joint_dataset_df)
 
-    outer_cv = StratifiedGroupKFold(
-        n_splits=n_splits, shuffle=True, random_state=seed_split,
-    )
     X_all = dataset_df.drop(['transition'], axis='columns')
     y_all = dataset_df['transition']
     groups_all = dataset_df['group']
@@ -674,11 +808,36 @@ def run_h3_tree_leaves(model_name, seed_split,
     fold_results = []
     feat_counter = Counter()
 
-    for k, (train_index, test_index) in enumerate(tqdm(
-        outer_cv.split(X_all, y_all, groups_all),
+    # Build outer iteration source and output label
+    if splits_file is not None:
+        _preloaded = _load_splits(splits_file)
+        n_splits = len(_preloaded)
+        split_label = Path(splits_file).stem
+        _outer_iter = (
+            (f['train_index'], f['test_index'], f['inner_splits'])
+            for f in _preloaded
+        )
+    else:
+        outer_cv = StratifiedGroupKFold(
+            n_splits=n_splits, shuffle=True, random_state=seed_split,
+        )
+        split_label = str(seed_split)
+        _outer_iter = (
+            (train_idx, test_idx, None)
+            for train_idx, test_idx in outer_cv.split(X_all, y_all, groups_all)
+        )
+
+    for k, (train_index, test_index, _preloaded_inner) in enumerate(tqdm(
+        _outer_iter,
         total=n_splits, desc='Outer CV folds', unit='fold',
     )):
         logger.info(f"\n{'='*60}\nOuter fold {k+1}/{n_splits}\n{'='*60}")
+
+        cv_inner_fold = (
+            _PrecomputedSplitter(_preloaded_inner)
+            if _preloaded_inner is not None
+            else cv_inner
+        )
 
         # ----- Step 0: Data Preprocessing -----
         woe_biom = WoETransformer(woe_dict_biom, categorical_biom)
@@ -715,7 +874,7 @@ def run_h3_tree_leaves(model_name, seed_split,
             X_biom_train, y_train, X_biom_test, y_test,
             model=model_name, seed_rf=seed_rf,
             seed_bayes=seed_bayes + 20, n_iter=n_iter,
-            cv=cv_inner, groups=groups_train,
+            cv=cv_inner_fold, groups=groups_train,
             cat_vars=cat_biom or None, n_jobs=n_jobs, gpu=gpu,
         )
         biom_test_proba = biom_model.predict_proba(X_biom_test_enc)[:, 1]
@@ -728,7 +887,7 @@ def run_h3_tree_leaves(model_name, seed_split,
             X_mrf_train, y_train, X_mrf_test, y_test,
             model=model_name, seed_rf=seed_rf,
             seed_bayes=seed_bayes + 30, n_iter=n_iter,
-            cv=cv_inner, groups=groups_train,
+            cv=cv_inner_fold, groups=groups_train,
             cat_vars=cat_mrf or None, n_jobs=n_jobs, gpu=gpu,
         )
 
@@ -773,12 +932,59 @@ def run_h3_tree_leaves(model_name, seed_split,
 
         # ----- Step 5: L1 Sparse Selection & Final Model -----
         logger.info("Applying L1 LogisticRegression CV for sparse leaf selection...")
-        X_combined_train = pd.concat([X_biom_train_enc, lm_train_top], axis=1)
-        X_combined_test = pd.concat([X_biom_test_enc, lm_test_top], axis=1)
+        # When feature_mode_biom='raw_woe', raw biomarker columns may contain
+        # missing values that break logistic regression.  Use only the
+        # WoE-transformed BIOM columns for the L1 selection stage.
+        # With metric_missing='empirical' in WoETransformer, the WoE of a missing
+        # value reflects its actual relationship to the target (MNAR signal encoded).
+        if feature_mode_biom == 'raw_woe':
+            X_biom_logreg_train = _filter_features(X_biom_train_enc, 'woe')
+            X_biom_logreg_test = _filter_features(X_biom_test_enc, 'woe')
+            logger.info(
+                f"  LogReg: restricting BIOM to {X_biom_logreg_train.shape[1]} "
+                "WoE-only columns to avoid missing values in raw biomarkers."
+            )
+        else:
+            X_biom_logreg_train = X_biom_train_enc
+            X_biom_logreg_test = X_biom_test_enc
 
-        # We must scale features for L1 Logistic Regression
-        # We only scale the biom features, leaves are binary [0, 1]
-        biom_cols = X_biom_train_enc.columns
+        # Capture WoE/continuous BIOM columns before augmenting with binary indicators.
+        # Only these columns need z-score scaling; the indicators (0/1) do not.
+        biom_cols = X_biom_logreg_train.columns
+
+        # Add explicit MNAR missingness indicator columns.
+        # These are binary flags (1 = raw value was missing) derived from the raw BIOM
+        # columns in X_biom_train.  They make the "not-measured" signal visible to L1
+        # logistic regression so it can select which missingness patterns matter, even
+        # when the raw feature itself cannot enter the model.
+        if feature_mode_biom in ('raw', 'raw_woe'):
+            _raw_biom_cols = [c for c in X_biom_train.columns if not c.endswith('_WOE')]
+            _missing_cols = [c for c in _raw_biom_cols if X_biom_train[c].isna().any()]
+            if _missing_cols:
+                _miss_train = (
+                    X_biom_train[_missing_cols].isna().astype(int)
+                    .rename(columns=lambda c: f'{c}_MISSING')
+                )
+                _miss_test = (
+                    X_biom_test[_missing_cols].isna().astype(int)
+                    .rename(columns=lambda c: f'{c}_MISSING')
+                )
+                X_biom_logreg_train = pd.concat([X_biom_logreg_train, _miss_train], axis=1)
+                X_biom_logreg_test = pd.concat([X_biom_logreg_test, _miss_test], axis=1)
+                logger.info(
+                    f"  LogReg: added {len(_missing_cols)} MNAR missingness indicators "
+                    f"({_missing_cols})"
+                )
+
+        X_combined_train = pd.concat([X_biom_logreg_train, lm_train_top], axis=1)
+        X_combined_test = pd.concat([X_biom_logreg_test, lm_test_top], axis=1)
+
+        # Track the boundary between BIOM-related columns (WoE + optional MISSING
+        # indicators) and leaf columns so we can slice coef_ correctly below.
+        n_non_leaf_cols = X_biom_logreg_train.shape[1]
+
+        # Scale only continuous BIOM (WoE) columns; leaves and MISSING indicators
+        # are already on a [0, 1] scale and must not be standardised.
         biom_means = X_combined_train[biom_cols].mean()
         biom_stds = X_combined_train[biom_cols].std()
         # Prevent zero division
@@ -790,29 +996,51 @@ def run_h3_tree_leaves(model_name, seed_split,
         X_combined_test_scaled[biom_cols] = (X_combined_test[biom_cols] - biom_means) / biom_stds
 
         # Create list of tuples for StratifiedGroupKFold to pass to LogisticRegressionCV
-        cv_inner_splits = list(cv_inner.split(X_combined_train_scaled, y_train, groups_train))
+        cv_inner_splits = list(cv_inner_fold.split(X_combined_train_scaled, y_train, groups_train))
 
         l1_model = LogisticRegressionCV(
-            Cs=10, cv=cv_inner_splits, penalty='l1', solver='liblinear',
-            scoring='roc_auc', random_state=seed_rf, n_jobs=n_jobs, max_iter=2000
+            Cs=100, cv=cv_inner_splits, l1_ratios=(1,), solver='saga',
+            scoring='roc_auc', random_state=seed_rf, n_jobs=n_jobs, max_iter=5000,
+            use_legacy_attributes=False
         )
         l1_model.fit(X_combined_train_scaled, y_train)
 
         # Identify which MRF leaves survived L1 selection
-        # (coef_[0] aligns with X_combined_train columns)
+        # (coef_[0] aligns with X_combined_train columns: WoE | MISSING | leaves)
         coefs = l1_model.coef_[0]
-        # the first len(biom_cols) are biom, the rest are the MRF leaves
-        leaf_coefs = coefs[len(biom_cols):]
+        # leaf coefficients start after all non-leaf columns (WoE + MISSING indicators)
+        leaf_coefs = coefs[n_non_leaf_cols:]
         selected_leaves = [leaf for leaf, c in zip(top_leaves, leaf_coefs) if abs(c) > 1e-5]
 
         logger.info(f"  L1 selection kept {len(selected_leaves)} / {len(top_leaves)} MRF leaves.")
         feat_counter.update(selected_leaves)
 
-        final_test_proba = l1_model.predict_proba(X_combined_test_scaled)[:, 1]
+        # ----- Step 6: Final CatBoost on BIOM + selected leaves -----
+        # L1 was used only for feature selection; the final model reuses the
+        # BIOM-tuned CatBoost hyperparameters and is trained on the full
+        # BIOM feature set (CatBoost handles NaN natively) plus the leaves
+        # that L1 identified as informative.
+        logger.info(
+            f"  Training final CatBoost on BIOM + {len(selected_leaves)} "
+            "selected leaves..."
+        )
+        lm_train_selected = (lm_train_top[selected_leaves] if selected_leaves
+                             else pd.DataFrame(index=X_biom_train_enc.index))
+        lm_test_selected  = (lm_test_top[selected_leaves] if selected_leaves
+                             else pd.DataFrame(index=X_biom_test_enc.index))
+
+        X_final_train = pd.concat([X_biom_train_enc, lm_train_selected], axis=1)
+        X_final_test  = pd.concat([X_biom_test_enc,  lm_test_selected],  axis=1)
+
+        final_cb = create_model(model_name, seed=seed_rf, cat_vars=cat_biom or None, gpu=gpu)
+        final_cb.set_params(**biom_study.best_params)
+        final_cb.fit(X_final_train, y_train)
+
+        final_test_proba = final_cb.predict_proba(X_final_test)[:, 1]
         final_test_auc = roc_auc_score(y_test, final_test_proba)
 
         logger.info(f"  BIOM-only test AUC: {biom_test_auc:.4f}")
-        logger.info(f"  BIOM+Leaves (L1) test AUC: {final_test_auc:.4f}")
+        logger.info(f"  BIOM+Leaves (CatBoost) test AUC: {final_test_auc:.4f}")
 
         fold_results.append({
             'fold': k,
@@ -832,7 +1060,7 @@ def run_h3_tree_leaves(model_name, seed_split,
     final_aucs = [r['final_test_auc'] for r in fold_results]
     
     logger.info(f"  BIOM-only AUC:      {np.mean(biom_aucs):.3f} ± {np.std(biom_aucs):.3f}")
-    logger.info(f"  BIOM+Leaves AUC:    {np.mean(final_aucs):.3f} ± {np.std(final_aucs):.3f}")
+    logger.info(f"  BIOM+Leaves (CatBoost) AUC: {np.mean(final_aucs):.3f} ± {np.std(final_aucs):.3f}")
 
     if feat_counter:
         logger.info("Most frequently selected leaves:")
@@ -840,13 +1068,13 @@ def run_h3_tree_leaves(model_name, seed_split,
             logger.info(f"    {feat}: {count}/{n_splits} folds")
 
     # ----- Plots -----
-    prefix = f'plots/h3_tree_leaves_{model_name}_B{feature_mode_biom}_M{feature_mode_mrf}_seed_{seed_split}'
+    prefix = f'plots/h3_tree_leaves_{model_name}_B{feature_mode_biom}_M{feature_mode_mrf}_seed_{split_label}'
 
     # 1. Boxplot: BIOM vs BIOM+Leaves
     auc_rows = []
     for r in fold_results:
         auc_rows.append({'model': 'BIOM-only', 'AUC': r['biom_test_auc']})
-        auc_rows.append({'model': 'BIOM+Leaves', 'AUC': r['final_test_auc']})
+        auc_rows.append({'model': 'BIOM+Leaves (CatBoost)', 'AUC': r['final_test_auc']})
 
     auc_df = pd.DataFrame(auc_rows)
     fig, ax = plt.subplots(figsize=(6, 6))
@@ -861,13 +1089,15 @@ def run_h3_tree_leaves(model_name, seed_split,
 
     # ----- Save -----
     results_path = (f'results/h3_tree_leaves_{model_name}_B{feature_mode_biom}'
-                    f'_M{feature_mode_mrf}_seed_{seed_split}.joblib')
+                    f'_M{feature_mode_mrf}_seed_{split_label}.joblib')
     joblib.dump({
         'hypothesis': 'h3_tree_leaves',
         'model_name': model_name,
         'feature_mode_biom': feature_mode_biom,
         'feature_mode_mrf': feature_mode_mrf,
         'seed_split': seed_split,
+        'splits_file': splits_file,
+        'split_label': split_label,
         'leaf_min_support': leaf_min_support,
         'leaf_top_k': leaf_top_k,
         'leaf_filter_method': leaf_filter_method,
@@ -897,9 +1127,16 @@ if __name__ == '__main__':
         choices=list(HYPOTHESES.keys()),
         help=f"Hypothesis to test: {list(HYPOTHESES.keys())}",
     )
-    parser.add_argument(
-        '--seed_split', type=int, required=True,
-        help="Seed for the outer StratifiedGroupKFold",
+    split_source = parser.add_mutually_exclusive_group(required=True)
+    split_source.add_argument(
+        '--seed_split', type=int, default=None,
+        help="Seed for the outer StratifiedGroupKFold (generates new splits).",
+    )
+    split_source.add_argument(
+        '--splits_file', type=str, default=None,
+        help="Path to a joblib results file (from any hypothesis run) whose "
+             "pre-computed train/test indices and inner CV splits are reused "
+             "verbatim.  Mutually exclusive with --seed_split.",
     )
     parser.add_argument(
         '--model_name', type=str, required=True,
