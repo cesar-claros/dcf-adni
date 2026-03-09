@@ -1330,6 +1330,13 @@ def forward_select_rules_by_auc(X_base_train, rule_train, y_train,
     while remaining and len(selected) < max_selected:
         best_rule = None
         best_auc = current_auc
+        evaluated_count = 0
+
+        logger.info(
+            "Forward selection step %d: evaluating %d candidate rule sets "
+            "(selected=%d, remaining=%d)",
+            len(selected) + 1, len(remaining), len(selected), len(remaining),
+        )
 
         for rule_id in remaining:
             candidate_cols = selected + [rule_id]
@@ -1347,11 +1354,17 @@ def forward_select_rules_by_auc(X_base_train, rule_train, y_train,
                 )
                 continue
 
+            evaluated_count += 1
             if candidate_auc > best_auc:
                 best_auc = candidate_auc
                 best_rule = rule_id
 
         gain = best_auc - current_auc
+        logger.info(
+            "Forward selection step %d: evaluated %d/%d candidate rule sets; "
+            "best_gain=%+.4f",
+            len(selected) + 1, evaluated_count, len(remaining), gain,
+        )
         if best_rule is None or gain < auc_threshold:
             break
 
