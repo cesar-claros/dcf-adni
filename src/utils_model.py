@@ -1141,7 +1141,10 @@ def extract_rf_rule_matrix(model, X_train, X_test):
 
     rule_train = pd.DataFrame(train_columns, index=X_train.index)
     rule_test = pd.DataFrame(test_columns, index=X_test.index)
-    metadata_df = pd.DataFrame(metadata_rows)
+    metadata_df = pd.DataFrame(
+        metadata_rows,
+        columns=['rule_id', 'tree', 'leaf_node', 'rule'],
+    )
     return rule_train, rule_test, metadata_df
 
 
@@ -1149,7 +1152,14 @@ def deduplicate_rule_matrix(rule_train, rule_test, metadata_df):
     """
     Remove duplicate rule strings first, then duplicate train activations.
     """
-    if rule_train.empty:
+    metadata_cols = ['rule_id', 'tree', 'leaf_node', 'rule']
+    metadata_df = metadata_df.copy()
+    for col in metadata_cols:
+        if col not in metadata_df.columns:
+            metadata_df[col] = pd.Series(dtype=object)
+    metadata_df = metadata_df[metadata_cols]
+
+    if rule_train.empty or metadata_df.empty:
         return rule_train, rule_test, metadata_df
 
     metadata_unique = metadata_df.drop_duplicates(subset=['rule'], keep='first')
@@ -1175,19 +1185,22 @@ def filter_rules_by_support(rule_train, rule_test, metadata_df,
     """
     Keep rules whose train-fold prevalence falls within the given interval.
     """
-    if rule_train.empty:
-        metadata_df = metadata_df.copy()
+    metadata_cols = ['rule_id', 'tree', 'leaf_node', 'rule']
+    metadata_df = metadata_df.copy()
+    for col in metadata_cols:
+        if col not in metadata_df.columns:
+            metadata_df[col] = pd.Series(dtype=object)
+    metadata_df = metadata_df[metadata_cols]
+
+    if rule_train.empty or metadata_df.empty:
         metadata_df['support'] = pd.Series(dtype=float)
         return rule_train, rule_test, metadata_df
 
     supports = rule_train.mean(axis=0)
     keep_cols = supports[(supports >= min_support) & (supports <= max_support)].index
-    metadata_df = (
-        metadata_df.set_index('rule_id')
-        .assign(support=supports)
-        .loc[keep_cols]
-        .reset_index()
-    )
+    metadata_df = metadata_df.set_index('rule_id')
+    metadata_df['support'] = supports.reindex(metadata_df.index)
+    metadata_df = metadata_df.loc[metadata_df.index.intersection(keep_cols)].reset_index()
     return rule_train[keep_cols], rule_test[keep_cols], metadata_df
 
 
