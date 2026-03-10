@@ -1105,6 +1105,31 @@ def canonicalize_rule(rule_path):
     return ' AND '.join(str(part).strip() for part in rule_path)
 
 
+def normalize_rule_metadata(metadata_df):
+    """
+    Ensure rule metadata has a stable tabular schema across pandas versions.
+    """
+    metadata_df = metadata_df.copy()
+
+    if 'rule_id' not in metadata_df.columns:
+        if metadata_df.index.name == 'rule_id':
+            metadata_df = metadata_df.reset_index()
+        elif (
+            metadata_df.index.nlevels == 1
+            and not isinstance(metadata_df.index, pd.RangeIndex)
+        ):
+            metadata_df = metadata_df.reset_index().rename(columns={'index': 'rule_id'})
+        else:
+            metadata_df['rule_id'] = pd.Series(dtype=object)
+
+    expected_cols = ['rule_id', 'tree', 'leaf_node', 'rule', 'support']
+    for col in expected_cols:
+        if col not in metadata_df.columns:
+            metadata_df[col] = pd.Series(dtype=float if col == 'support' else object)
+
+    return metadata_df[expected_cols]
+
+
 def extract_rf_rule_matrix(model, X_train, X_test):
     """
     Build train/test binary rule-activation matrices from a fitted RF model.
@@ -1145,10 +1170,10 @@ def extract_rf_rule_matrix(model, X_train, X_test):
 
     rule_train = pd.DataFrame(train_columns, index=X_train.index)
     rule_test = pd.DataFrame(test_columns, index=X_test.index)
-    metadata_df = pd.DataFrame(
+    metadata_df = normalize_rule_metadata(pd.DataFrame(
         metadata_rows,
         columns=['rule_id', 'tree', 'leaf_node', 'rule'],
-    )
+    ))
     return rule_train, rule_test, metadata_df
 
 
@@ -1156,12 +1181,7 @@ def deduplicate_rule_matrix(rule_train, rule_test, metadata_df):
     """
     Remove duplicate rule strings first, then duplicate train activations.
     """
-    metadata_cols = ['rule_id', 'tree', 'leaf_node', 'rule']
-    metadata_df = metadata_df.copy()
-    for col in metadata_cols:
-        if col not in metadata_df.columns:
-            metadata_df[col] = pd.Series(dtype=object)
-    metadata_df = metadata_df[metadata_cols]
+    metadata_df = normalize_rule_metadata(metadata_df)
 
     if rule_train.empty or metadata_df.empty:
         return rule_train, rule_test, metadata_df
@@ -1189,15 +1209,9 @@ def filter_rules_by_support(rule_train, rule_test, metadata_df,
     """
     Keep rules whose train-fold prevalence falls within the given interval.
     """
-    metadata_cols = ['rule_id', 'tree', 'leaf_node', 'rule']
-    metadata_df = metadata_df.copy()
-    for col in metadata_cols:
-        if col not in metadata_df.columns:
-            metadata_df[col] = pd.Series(dtype=object)
-    metadata_df = metadata_df[metadata_cols]
+    metadata_df = normalize_rule_metadata(metadata_df)
 
     if rule_train.empty or metadata_df.empty:
-        metadata_df['support'] = pd.Series(dtype=float)
         return rule_train, rule_test, metadata_df
 
     supports = rule_train.mean(axis=0)
@@ -1209,7 +1223,7 @@ def filter_rules_by_support(rule_train, rule_test, metadata_df,
         name='rule_id',
     )
     metadata_df = metadata_df.loc[keep_index].reset_index()
-    return rule_train[keep_cols], rule_test[keep_cols], metadata_df
+    return rule_train[keep_cols], rule_test[keep_cols], normalize_rule_metadata(metadata_df)
 
 
 def cross_validated_auc(X, y, model_name, model_params, cv, groups=None,

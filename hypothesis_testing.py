@@ -43,6 +43,7 @@ from src.utils_model import (
     feature_engineering,
     filter_rules_by_support,
     forward_select_rules_by_auc,
+    normalize_rule_metadata,
     score_rules_with_base_predictions,
     train_model,
 )
@@ -1298,9 +1299,7 @@ def run_h4_rulefit_rf(model_name, seed_split=None,
             rule_train, rule_test, rule_meta,
             min_support=rule_support_min, max_support=rule_support_max,
         )
-        for col in ['rule_id', 'rule', 'support']:
-            if col not in rule_meta.columns:
-                rule_meta[col] = pd.Series(dtype=object if col != 'support' else float)
+        rule_meta = normalize_rule_metadata(rule_meta)
         filtered_rule_count = int(rule_train.shape[1])
         logger.info(f"  {filtered_rule_count} rule indicators remain after support filtering.")
 
@@ -1339,12 +1338,20 @@ def run_h4_rulefit_rf(model_name, seed_split=None,
                 max_selected=rule_max_selected,
             )
 
-            selected_rules = (
-                rule_meta.set_index('rule_id')
-                .loc[selected_rule_ids, 'rule']
-                .tolist()
-                if selected_rule_ids else []
+            rule_lookup = (
+                normalize_rule_metadata(rule_meta)
+                .drop_duplicates(subset=['rule_id'], keep='first')
+                .set_index('rule_id')['rule']
+                .to_dict()
             )
+            missing_rule_ids = [rule_id for rule_id in selected_rule_ids if rule_id not in rule_lookup]
+            if missing_rule_ids:
+                logger.warning(
+                    "  %d selected rule ids were missing from rule metadata; "
+                    "falling back to raw ids for those entries.",
+                    len(missing_rule_ids),
+                )
+            selected_rules = [rule_lookup.get(rule_id, rule_id) for rule_id in selected_rule_ids]
             feat_counter.update(selected_rules)
 
             if selected_rule_ids:
