@@ -693,7 +693,7 @@ def score_csv(input_csv: str, output_csv: str, config: Optional[LibraConfig] = N
 
 EXAMPLE = r"""
 import pandas as pd
-from libra_adni_wide_v2 import LibraConfig, build_adni_libra_like_from_wide
+from libra_adni_wide_v3 import LibraConfig, build_adni_libra_like_from_wide
 
 df = pd.read_csv("sample_table.csv")
 
