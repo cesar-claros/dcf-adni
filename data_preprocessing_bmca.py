@@ -18,6 +18,7 @@ import pandas as pd
 try:
     from data_preprocessing_libra import (
         LibraConfig,
+        _replace_or_add_columns,
         _to_numeric,
         build_baseline_with_screening_fallback,
         build_transition_labels,
@@ -25,6 +26,7 @@ try:
 except ModuleNotFoundError:
     from Code.data_preprocessing_libra import (
         LibraConfig,
+        _replace_or_add_columns,
         _to_numeric,
         build_baseline_with_screening_fallback,
         build_transition_labels,
@@ -91,26 +93,47 @@ def build_adni_bmca_features_from_wide(
         "BAT126",
         "HMT40",
     ]
-    for col in biomarker_cols:
-        out[col] = _to_numeric(out[col]) if col in out.columns else np.nan
-
-    out["csf_abeta40"] = out["ABETA40"]
-    out["csf_abeta42"] = out["ABETA42"]
-    out["csf_tau"] = out["TAU"]
-    out["csf_ptau"] = out["PTAU"]
-    out["plasma_ptau217"] = out["pT217_F"]
-    out["plasma_abeta42"] = out["AB42_F"]
-    out["plasma_abeta42_abeta40_ratio"] = out["AB42_AB40_F"]
-    out["plasma_ptau217_abeta42_ratio"] = out["pT217_AB42_F"]
-    out["vitamin_b12"] = out["BAT126"]
-    out["hemoglobin"] = out["HMT40"]
-
-    out["csf_tau_abeta42_ratio"] = _safe_divide(out["csf_tau"], out["csf_abeta42"])
-    out["csf_ptau_abeta42_ratio"] = _safe_divide(out["csf_ptau"], out["csf_abeta42"])
-    out["csf_ptau_tau_ratio"] = _safe_divide(out["csf_ptau"], out["csf_tau"])
-    out["csf_abeta42_abeta40_ratio"] = _safe_divide(
-        out["csf_abeta42"], out["csf_abeta40"]
+    out = _replace_or_add_columns(
+        out,
+        {
+            col: (
+                _to_numeric(out[col])
+                if col in out.columns
+                else pd.Series(np.nan, index=out.index)
+            )
+            for col in biomarker_cols
+        },
     )
+
+    biomarker_features = {
+        "csf_abeta40": out["ABETA40"],
+        "csf_abeta42": out["ABETA42"],
+        "csf_tau": out["TAU"],
+        "csf_ptau": out["PTAU"],
+        "plasma_ptau217": out["pT217_F"],
+        "plasma_abeta42": out["AB42_F"],
+        "plasma_abeta42_abeta40_ratio": out["AB42_AB40_F"],
+        "plasma_ptau217_abeta42_ratio": out["pT217_AB42_F"],
+        "vitamin_b12": out["BAT126"],
+        "hemoglobin": out["HMT40"],
+    }
+    biomarker_features.update(
+        {
+            "csf_tau_abeta42_ratio": _safe_divide(
+                biomarker_features["csf_tau"], biomarker_features["csf_abeta42"]
+            ),
+            "csf_ptau_abeta42_ratio": _safe_divide(
+                biomarker_features["csf_ptau"], biomarker_features["csf_abeta42"]
+            ),
+            "csf_ptau_tau_ratio": _safe_divide(
+                biomarker_features["csf_ptau"], biomarker_features["csf_tau"]
+            ),
+            "csf_abeta42_abeta40_ratio": _safe_divide(
+                biomarker_features["csf_abeta42"], biomarker_features["csf_abeta40"]
+            ),
+        }
+    )
+    out = _replace_or_add_columns(out, biomarker_features)
 
     cognitive_raw = {
         "mmse_total": "MMSCORE",
@@ -123,9 +146,6 @@ def build_adni_bmca_features_from_wide(
         "cdrsb": "CDRSB",
         "faq_total": "FAQTOTAL",
     }
-    for new_col, raw_col in cognitive_raw.items():
-        out[new_col] = _to_numeric(out[raw_col]) if raw_col in out.columns else np.nan
-
     faq_item_map = {
         "faq_finances": "FAQFINAN",
         "faq_forms": "FAQFORM",
@@ -138,27 +158,54 @@ def build_adni_bmca_features_from_wide(
         "faq_reminders": "FAQREM",
         "faq_travel": "FAQTRAVL",
     }
-    for new_col, raw_col in faq_item_map.items():
-        out[new_col] = _to_numeric(out[raw_col]) if raw_col in out.columns else np.nan
+    cognitive_features = {
+        new_col: (
+            _to_numeric(out[raw_col])
+            if raw_col in out.columns
+            else pd.Series(np.nan, index=out.index)
+        )
+        for new_col, raw_col in {**cognitive_raw, **faq_item_map}.items()
+    }
+    cognitive_features.update(
+        {
+            "adas_q4_q14_delta": (
+                cognitive_features["adas13_total"] - cognitive_features["adas11_total"]
+            ),
+            "logical_memory_retention_ratio": _safe_divide(
+                cognitive_features["logical_memory_delayed"],
+                cognitive_features["logical_memory_immediate"],
+            ),
+            "faq_any_impairment": np.where(
+                cognitive_features["faq_total"].notna(),
+                (cognitive_features["faq_total"] > 0).astype(float),
+                np.nan,
+            ),
+        }
+    )
+    out = _replace_or_add_columns(out, cognitive_features)
 
-    out["adas_q4_q14_delta"] = out["adas13_total"] - out["adas11_total"]
-    out["logical_memory_retention_ratio"] = _safe_divide(
-        out["logical_memory_delayed"], out["logical_memory_immediate"]
-    )
-    out["faq_any_impairment"] = np.where(
-        out["faq_total"].notna(), (out["faq_total"] > 0).astype(float), np.nan
-    )
-
-    out["somatic_complaints"] = (
-        _map_binary_codes(out["HMSOMATC"], {1}, {0}) if "HMSOMATC" in out.columns else np.nan
-    )
-    out["hachinski_hypertension_history"] = (
-        _map_binary_codes(out["HMHYPERT"], {1}, {0}) if "HMHYPERT" in out.columns else np.nan
-    )
-    out["hachinski_stroke_history"] = (
-        _map_binary_codes(out["HMSTROKE"], {2}, {0}) if "HMSTROKE" in out.columns else np.nan
-    )
-    out["hachinski_total_score"] = _to_numeric(out["HMSCORE"]) if "HMSCORE" in out.columns else np.nan
+    medical_features = {
+        "somatic_complaints": (
+            _map_binary_codes(out["HMSOMATC"], {1}, {0})
+            if "HMSOMATC" in out.columns
+            else pd.Series(np.nan, index=out.index)
+        ),
+        "hachinski_hypertension_history": (
+            _map_binary_codes(out["HMHYPERT"], {1}, {0})
+            if "HMHYPERT" in out.columns
+            else pd.Series(np.nan, index=out.index)
+        ),
+        "hachinski_stroke_history": (
+            _map_binary_codes(out["HMSTROKE"], {2}, {0})
+            if "HMSTROKE" in out.columns
+            else pd.Series(np.nan, index=out.index)
+        ),
+        "hachinski_total_score": (
+            _to_numeric(out["HMSCORE"])
+            if "HMSCORE" in out.columns
+            else pd.Series(np.nan, index=out.index)
+        ),
+    }
 
     present_absent_12 = {
         "auditory_impairment": "NXAUDITO",
@@ -181,49 +228,64 @@ def build_adni_bmca_features_from_wide(
         "baseline_depressed_mood": "BCDPMOOD",
         "baseline_fall": "BCFALL",
     }
-    for new_col, raw_col in present_absent_12.items():
-        out[new_col] = (
-            _map_binary_codes(out[raw_col], {2}, {1}) if raw_col in out.columns else np.nan
-        )
-
-    out["baseline_stroke"] = (
-        _map_binary_codes(out["BCSTROKE"], {1}, {0}) if "BCSTROKE" in out.columns else np.nan
+    medical_features.update(
+        {
+            new_col: (
+                _map_binary_codes(out[raw_col], {2}, {1})
+                if raw_col in out.columns
+                else pd.Series(np.nan, index=out.index)
+            )
+            for new_col, raw_col in present_absent_12.items()
+        }
     )
 
-    out["neurovascular_burden"] = _sum_with_nan(
-        out,
-        [
-            "somatic_complaints",
-            "hachinski_hypertension_history",
-            "hachinski_stroke_history",
-            "physical_heart_exam_abnormal",
-            "peripheral_vascular_exam_abnormal",
-        ],
+    medical_features["baseline_stroke"] = (
+        _map_binary_codes(out["BCSTROKE"], {1}, {0})
+        if "BCSTROKE" in out.columns
+        else pd.Series(np.nan, index=out.index)
     )
-    out["symptom_burden_current"] = _sum_with_nan(
+    out = _replace_or_add_columns(out, medical_features)
+
+    medical_frame = pd.DataFrame(medical_features, index=out.index)
+    out = _replace_or_add_columns(
         out,
-        [
-            "blurred_vision_symptom",
-            "headache_symptom",
-            "chest_pain_symptom",
-            "musculoskeletal_pain_symptom",
-            "insomnia_symptom",
-            "depressed_mood_symptom",
-            "fall_symptom",
-        ],
-    )
-    out["symptom_burden_baseline"] = _sum_with_nan(
-        out,
-        [
-            "baseline_vomiting",
-            "baseline_blurred_vision",
-            "baseline_headache",
-            "baseline_chest_pain",
-            "baseline_musculoskeletal_pain",
-            "baseline_insomnia",
-            "baseline_depressed_mood",
-            "baseline_fall",
-        ],
+        {
+            "neurovascular_burden": _sum_with_nan(
+                medical_frame,
+                [
+                    "somatic_complaints",
+                    "hachinski_hypertension_history",
+                    "hachinski_stroke_history",
+                    "physical_heart_exam_abnormal",
+                    "peripheral_vascular_exam_abnormal",
+                ],
+            ),
+            "symptom_burden_current": _sum_with_nan(
+                medical_frame,
+                [
+                    "blurred_vision_symptom",
+                    "headache_symptom",
+                    "chest_pain_symptom",
+                    "musculoskeletal_pain_symptom",
+                    "insomnia_symptom",
+                    "depressed_mood_symptom",
+                    "fall_symptom",
+                ],
+            ),
+            "symptom_burden_baseline": _sum_with_nan(
+                medical_frame,
+                [
+                    "baseline_vomiting",
+                    "baseline_blurred_vision",
+                    "baseline_headache",
+                    "baseline_chest_pain",
+                    "baseline_musculoskeletal_pain",
+                    "baseline_insomnia",
+                    "baseline_depressed_mood",
+                    "baseline_fall",
+                ],
+            ),
+        },
     )
 
     depression_npi_cols = [
@@ -252,14 +314,28 @@ def build_adni_bmca_features_from_wide(
         "NPIK9B",
         "NPIK9C",
     ]
-    for col in depression_npi_cols + sleep_npi_cols + ["NPIDTOT", "NPIKTOT", "NPIKSEV"]:
-        out[col] = _to_numeric(out[col]) if col in out.columns else np.nan
-
-    out["npi_depression_item_score"] = out["NPIDTOT"]
-    out["npi_sleep_item_score"] = out["NPIKTOT"]
-    out["npi_sleep_severity"] = out["NPIKSEV"]
-    out["npi_depression_domain_sum"] = _sum_with_nan(out, depression_npi_cols)
-    out["npi_sleep_domain_sum"] = _sum_with_nan(out, sleep_npi_cols)
+    npi_raw_cols = depression_npi_cols + sleep_npi_cols + ["NPIDTOT", "NPIKTOT", "NPIKSEV"]
+    out = _replace_or_add_columns(
+        out,
+        {
+            col: (
+                _to_numeric(out[col])
+                if col in out.columns
+                else pd.Series(np.nan, index=out.index)
+            )
+            for col in npi_raw_cols
+        },
+    )
+    out = _replace_or_add_columns(
+        out,
+        {
+            "npi_depression_item_score": out["NPIDTOT"],
+            "npi_sleep_item_score": out["NPIKTOT"],
+            "npi_sleep_severity": out["NPIKSEV"],
+            "npi_depression_domain_sum": _sum_with_nan(out, depression_npi_cols),
+            "npi_sleep_domain_sum": _sum_with_nan(out, sleep_npi_cols),
+        },
+    )
 
     preferred_cols = [
         config.subject_id_col,
