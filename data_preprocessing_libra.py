@@ -709,9 +709,9 @@ def score_csv(input_csv: str, output_csv: str, config: Optional[LibraConfig] = N
 
 EXAMPLE = r"""
 import pandas as pd
-from libra_adni_wide_v3 import LibraConfig, build_adni_libra_like_from_wide
+from data_preprocessing_libra import LibraConfig, build_adni_libra_like_from_wide
 
-df = pd.read_csv("sample_table.csv")
+df = pd.read_csv("data/All_Subjects_My_Table_11Mar2026.csv")
 
 cfg = LibraConfig(
     subject_id_col="subject_id",
@@ -726,7 +726,7 @@ cfg = LibraConfig(
     gds_threshold=6,
 )
 
-score_df = build_adni_libra_like_from_wide(df, config=cfg)
-score_df.to_csv("adni_libra_like_scores_with_labels.csv", index=False)
-print(score_df.head())
+libra_df = build_adni_libra_like_from_wide(df, config=cfg)
+libra_df.to_csv("data/adni_libra_like_scores_with_labels.csv", index=False)
+print(libra_df.head())
 """
