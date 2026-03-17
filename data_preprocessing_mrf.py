@@ -87,8 +87,15 @@ def _zscore(series: pd.Series) -> pd.Series:
 
 
 def _mean_from_parts(*parts: pd.Series) -> pd.Series:
-    stack = np.vstack([_to_numeric(p).values for p in parts])
-    return pd.Series(np.nanmean(stack, axis=0), index=parts[0].index)
+    stack = np.vstack([_to_numeric(p).values for p in parts]).astype(float)
+    valid_counts = np.sum(~np.isnan(stack), axis=0)
+    means = np.divide(
+        np.nansum(stack, axis=0),
+        valid_counts,
+        out=np.full(valid_counts.shape, np.nan, dtype=float),
+        where=valid_counts > 0,
+    )
+    return pd.Series(means, index=parts[0].index)
 
 
 def _sum_with_nan(*parts: pd.Series) -> pd.Series:
@@ -181,6 +188,7 @@ def build_adni_mrf_features_from_wide(
         1.0,
         np.where(smoke_hist == 0, 0.0, np.nan),
     )
+    out["smoking"] = out["current_smoking"]
     out["smoking_packs_per_day"] = (
         _to_numeric(out["MH16ASMOK"]) if "MH16ASMOK" in out.columns else np.nan
     )
@@ -194,9 +202,7 @@ def build_adni_mrf_features_from_wide(
         _zscore(out["smoking_duration_years"]),
         _zscore(-out["smoking_years_since_quit"]),
     ]
-    out["tobacco_burden"] = pd.Series(
-        np.nanmean(np.vstack([p.values for p in tobacco_parts]), axis=0), index=out.index
-    )
+    out["tobacco_burden"] = _mean_from_parts(*tobacco_parts)
     out.loc[out["smoking_history"] == 0, "tobacco_burden"] = 0.0
 
     alcohol_hist = (
@@ -228,9 +234,7 @@ def build_adni_mrf_features_from_wide(
         _zscore(out["alcohol_abuse_duration_years"]),
         _zscore(-out["alcohol_years_since_end"]),
     ]
-    out["alcohol_burden"] = pd.Series(
-        np.nanmean(np.vstack([p.values for p in alcohol_parts]), axis=0), index=out.index
-    )
+    out["alcohol_burden"] = _mean_from_parts(*alcohol_parts)
     out.loc[out["alcohol_abuse_history"] == 0, "alcohol_burden"] = 0.0
 
     out["systolic_bp"] = _to_numeric(out["VSBPSYS"]) if "VSBPSYS" in out.columns else np.nan
@@ -413,9 +417,14 @@ def build_adni_mrf_features_from_wide(
     entry_year = pd.Series(np.nan, index=out.index)
     if "entry_date" in out.columns:
         entry_year = _coerce_datetime(out["entry_date"]).dt.year
+    retirement_year = (
+        _to_numeric(out["PTRTYR"])
+        if "PTRTYR" in out.columns
+        else pd.Series(np.nan, index=out.index)
+    )
     out["years_retired"] = np.where(
-        (out["retired"] == 1) & entry_year.notna() & out.get("PTRTYR", pd.Series(np.nan, index=out.index)).notna(),
-        entry_year - _to_numeric(out["PTRTYR"]),
+        (out["retired"] == 1) & entry_year.notna() & retirement_year.notna(),
+        entry_year - retirement_year,
         np.nan,
     )
 
