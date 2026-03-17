@@ -696,8 +696,7 @@ def build_adni_libra_like_from_wide(df: pd.DataFrame, config: Optional[LibraConf
         "modifiable_risk_core8_count",
     ]
     existing = [c for c in preferred_cols if c in out.columns]
-    remainder = [c for c in out.columns if c not in existing]
-    return out[existing + remainder]
+    return out[existing]
 
 
 def score_csv(input_csv: str, output_csv: str, config: Optional[LibraConfig] = None) -> pd.DataFrame:
