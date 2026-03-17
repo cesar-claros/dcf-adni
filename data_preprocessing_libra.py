@@ -176,7 +176,7 @@ def _contains_delimited_code(series: pd.Series, code: str | int) -> pd.Series:
     s = series.astype(str).str.replace(r"\s+", "", regex=True)
     mask_missing = series.isna() | s.eq("") | s.eq("nan")
     token = re.escape(str(code))
-    match = s.str.contains(rf"(^|\|){token}($|\|)", regex=True, na=False)
+    match = s.str.contains(rf"(?:^|\|){token}(?:$|\|)", regex=True, na=False)
     return pd.Series(
         np.where(mask_missing, np.nan, np.where(match, 1.0, 0.0)),
         index=series.index,
@@ -213,6 +213,21 @@ def _replace_or_add_columns(
     updates = pd.DataFrame(columns, index=frame.index)
     preserved = frame.drop(columns=list(updates.columns), errors="ignore")
     return pd.concat([preserved, updates], axis=1)
+
+
+def _nanmean_rows(*parts: pd.Series) -> pd.Series:
+    if not parts:
+        return pd.Series(dtype=float)
+
+    stack = np.vstack([_to_numeric(p).values for p in parts]).astype(float)
+    valid_counts = np.sum(~np.isnan(stack), axis=0)
+    means = np.divide(
+        np.nansum(stack, axis=0),
+        valid_counts,
+        out=np.full(valid_counts.shape, np.nan, dtype=float),
+        where=valid_counts > 0,
+    )
+    return pd.Series(means, index=parts[0].index)
 
 
 def _convert_weight_to_kg(weight: pd.Series, unit: pd.Series) -> pd.Series:
@@ -523,11 +538,10 @@ def build_adni_libra_like_from_wide(df: pd.DataFrame, config: Optional[LibraConf
                 parts.append((s - s.mean()) / s.std(ddof=0))
             else:
                 parts.append(pd.Series(np.nan, index=out.index))
-        stack = np.vstack([p.values for p in parts])
-        tb = np.nanmean(stack, axis=0)
+        tb = _nanmean_rows(*parts)
         out["tobacco_burden"] = np.where(
             smoke_hist == 1,
-            tb,
+            tb.values,
             np.where(smoke_hist == 0, 0.0, np.nan),
         )
     else:
@@ -626,7 +640,9 @@ def build_adni_libra_like_from_wide(df: pd.DataFrame, config: Optional[LibraConf
         r = _ensure_binary(out["PTNOTRT"])
         not_retired = pd.Series(np.where(r == 0, 1.0, np.where(r == 1, 0.0, np.nan)), index=out.index)
 
-    out["social_structural_engagement"] = np.nanmean(np.vstack([partnered.values, community.values, not_retired.values]), axis=0)
+    out["social_structural_engagement"] = _nanmean_rows(
+        partnered, community, not_retired
+    ).values
 
     # Treatment gap
     out["vascular_treatment_gap"] = (
