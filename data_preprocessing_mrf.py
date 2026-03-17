@@ -565,7 +565,7 @@ EXAMPLE = r"""
 import pandas as pd
 from data_preprocessing_mrf import MRFConfig, build_adni_mrf_features_from_wide
 
-df = pd.read_csv("All_Subjects_My_Table_11Mar2026.csv")
+df = pd.read_csv("data/All_Subjects_My_Table_11Mar2026.csv")
 cfg = MRFConfig(subject_id_col="subject_id", visit_col="visit", diagnosis_col="DIAGNOSIS")
 
 mrf_df = build_adni_mrf_features_from_wide(df, config=cfg)
