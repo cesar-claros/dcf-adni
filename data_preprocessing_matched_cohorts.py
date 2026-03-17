@@ -55,7 +55,7 @@ class CohortMatchConfig(LibraConfig):
     exclude_baseline_dementia_from_impairment: bool = True
     max_age_gap_years: Optional[float] = None
     require_full_matching: bool = True
-    require_full_augmentation_matching: bool = True
+    require_full_augmentation_matching: bool = False
     solver_msg: bool = False
     output_prefix: str = "cn_progression"
 
@@ -413,6 +413,12 @@ def match_remaining_stable_to_ci_dementia(
             "Augmentation matching is infeasible in at least one (GENOTYPE, PTGENDER) stratum:\n"
             + infeasible.to_string(index=False)
         )
+    if len(infeasible) and not config.require_full_augmentation_matching:
+        log.warning(
+            "Partial augmentation matching: some (GENOTYPE, PTGENDER) strata have fewer "
+            "ci_to_dementia subjects than remaining stable-CN subjects.\n%s",
+            infeasible.to_string(index=False),
+        )
 
     match_frames = []
     for (genotype, sex), stable_stratum in remaining_stable_df.groupby(stratum_cols, dropna=False):
@@ -428,6 +434,12 @@ def match_remaining_stable_to_ci_dementia(
                     "No compatible cognitive-impairment subjects available in augmentation stratum "
                     f"GENOTYPE={genotype!r}, PTGENDER={sex!r}."
                 )
+            log.warning(
+                "Skipping augmentation stratum with no compatible ci_to_dementia subjects: "
+                "GENOTYPE=%r, PTGENDER=%r.",
+                genotype,
+                sex,
+            )
             continue
 
         stable_stratum = stable_stratum.reset_index(drop=True)
@@ -447,21 +459,45 @@ def match_remaining_stable_to_ci_dementia(
         for i, _, _ in feasible_pairs:
             feasible_by_stable[i] += 1
         no_match = [i for i, n in feasible_by_stable.items() if n == 0]
-        if no_match:
+        if no_match and config.require_full_augmentation_matching:
             raise ValueError(
                 "Augmentation matching is infeasible: at least one remaining stable-CN subject "
                 "has no feasible cognitive-impairment match under the current constraints."
             )
+        if not feasible_pairs:
+            if config.require_full_augmentation_matching:
+                raise ValueError(
+                    "Augmentation matching is infeasible: no feasible pairs remain under the "
+                    "current constraints."
+                )
+            log.warning(
+                "Skipping augmentation stratum with no feasible exact matches after constraints: "
+                "GENOTYPE=%r, PTGENDER=%r.",
+                genotype,
+                sex,
+            )
+            continue
 
         problem = pulp.LpProblem("augmentation_matching", pulp.LpMinimize)
         x = {
             (i, j): pulp.LpVariable(f"aug_x_{i}_{j}", cat="Binary")
             for i, j, _ in feasible_pairs
         }
-        problem += pulp.lpSum(cost * x[(i, j)] for i, j, cost in feasible_pairs)
+        if config.require_full_augmentation_matching:
+            problem += pulp.lpSum(cost * x[(i, j)] for i, j, cost in feasible_pairs)
+        else:
+            reward = sum(cost for _, _, cost in feasible_pairs) + 1.0
+            problem.sense = pulp.LpMaximize
+            problem += (
+                reward * pulp.lpSum(x.values())
+                - pulp.lpSum(cost * x[(i, j)] for i, j, cost in feasible_pairs)
+            )
 
         for i in range(len(stable_stratum)):
-            problem += pulp.lpSum(x[(ii, jj)] for (ii, jj) in x if ii == i) == 1
+            if config.require_full_augmentation_matching:
+                problem += pulp.lpSum(x[(ii, jj)] for (ii, jj) in x if ii == i) == 1
+            else:
+                problem += pulp.lpSum(x[(ii, jj)] for (ii, jj) in x if ii == i) <= 1
         for j in range(len(ci_stratum)):
             problem += pulp.lpSum(x[(ii, jj)] for (ii, jj) in x if jj == j) <= 1
 
@@ -492,12 +528,43 @@ def match_remaining_stable_to_ci_dementia(
                 )
         match_frames.append(pd.DataFrame(rows))
 
-    augmentation_pairs_df = pd.concat(match_frames, ignore_index=True) if match_frames else pd.DataFrame()
+    augmentation_pair_columns = [
+        "stable_subject_id",
+        "ci_subject_id",
+        config.genotype_col,
+        config.sex_col,
+        f"stable_{config.age_col}",
+        f"ci_{config.age_col}",
+        "abs_age_gap",
+        "first_dementia_month",
+        config.entry_group_col,
+    ]
+    augmentation_pairs_df = (
+        pd.concat(match_frames, ignore_index=True)
+        if match_frames
+        else pd.DataFrame(columns=augmentation_pair_columns)
+    )
+
+    matched_counts = (
+        augmentation_pairs_df.groupby(stratum_cols, dropna=False)
+        .size()
+        .rename("n_augmentation_matches")
+        .reset_index()
+    )
+    stratum_counts = stratum_counts.merge(matched_counts, on=stratum_cols, how="left")
+    stratum_counts["n_augmentation_matches"] = (
+        stratum_counts["n_augmentation_matches"].fillna(0).astype(int)
+    )
+    stratum_counts["n_remaining_stable_unmatched"] = (
+        stratum_counts["n_remaining_stable"] - stratum_counts["n_augmentation_matches"]
+    )
 
     group_start = 0
     if len(primary_match_results["matched_pairs_df"]):
         group_start = int(primary_match_results["matched_pairs_df"]["group"].max())
-    augmentation_pairs_df["pair_id"] = range(group_start + 1, group_start + 1 + len(augmentation_pairs_df))
+    augmentation_pairs_df["pair_id"] = range(
+        group_start + 1, group_start + 1 + len(augmentation_pairs_df)
+    )
     augmentation_pairs_df["group"] = augmentation_pairs_df["pair_id"].astype(int)
     augmentation_pairs_df["analysis_set"] = "augmentation"
     augmentation_pairs_df["evaluation_eligible"] = 0
@@ -572,7 +639,7 @@ def build_and_match_from_csv(
     if config is None:
         config = CohortMatchConfig()
 
-    df = pd.read_csv(input_csv)
+    df = pd.read_csv(input_csv, low_memory=False)
     cohort_df = build_subject_level_cohorts(df, config=config)
     results = match_transition_to_stable_cn(cohort_df, config=config)
     augmentation_results = match_remaining_stable_to_ci_dementia(
