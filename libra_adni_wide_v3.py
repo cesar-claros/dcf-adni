@@ -193,6 +193,32 @@ def _first_existing_column(df: pd.DataFrame, candidates: Sequence[str]) -> Optio
     return None
 
 
+def _replace_or_add_columns(
+    frame: pd.DataFrame, columns: Dict[str, pd.Series | np.ndarray | float | int]
+) -> pd.DataFrame:
+    if not columns:
+        return frame
+
+    updates = pd.DataFrame(columns, index=frame.index)
+    preserved = frame.drop(columns=list(updates.columns), errors="ignore")
+    return pd.concat([preserved, updates], axis=1)
+
+
+def _nanmean_rows(*parts: pd.Series) -> pd.Series:
+    if not parts:
+        return pd.Series(dtype=float)
+
+    stack = np.vstack([_to_numeric(p).values for p in parts]).astype(float)
+    valid_counts = np.sum(~np.isnan(stack), axis=0)
+    means = np.divide(
+        np.nansum(stack, axis=0),
+        valid_counts,
+        out=np.full(valid_counts.shape, np.nan, dtype=float),
+        where=valid_counts > 0,
+    )
+    return pd.Series(means, index=parts[0].index)
+
+
 def _convert_weight_to_kg(weight: pd.Series, unit: pd.Series) -> pd.Series:
     w = _to_numeric(weight)
     u = _to_numeric(unit)
@@ -321,22 +347,34 @@ def build_baseline_with_screening_fallback(df: pd.DataFrame, config: Optional[Li
     sc_allowed.loc[~screening_allowed, :] = np.nan
 
     combined = bl.combine_first(sc_allowed)
-    combined[config.subject_id_col] = combined.index
-    combined["has_baseline_row"] = combined.index.isin(bl.dropna(how="all").index).astype(int)
-    combined["has_screening_row"] = combined.index.isin(sc.dropna(how="all").index).astype(int)
-    combined["screening_fallback_allowed"] = screening_allowed.astype(int).reindex(combined.index).fillna(1).astype(int)
-
+    source_columns = {}
     for c in combined.columns:
-        if c in {config.subject_id_col, "has_baseline_row", "has_screening_row", "screening_fallback_allowed"}:
-            continue
         if c not in bl.columns and c not in sc_allowed.columns:
             continue
         blc = bl[c] if c in bl.columns else pd.Series(index=combined.index, dtype=object)
-        scc = sc_allowed[c] if c in sc_allowed.columns else pd.Series(index=combined.index, dtype=object)
+        scc = (
+            sc_allowed[c]
+            if c in sc_allowed.columns
+            else pd.Series(index=combined.index, dtype=object)
+        )
         src_col = pd.Series([None] * len(combined), index=combined.index, dtype=object)
         src_col.loc[scc.notna()] = config.fallback_visit
         src_col.loc[blc.notna()] = config.baseline_visit
-        combined[f"__src__{c}"] = src_col
+        source_columns[f"__src__{c}"] = src_col
+
+    combined = _replace_or_add_columns(
+        combined,
+        {
+            config.subject_id_col: pd.Series(combined.index, index=combined.index),
+            "has_baseline_row": combined.index.isin(bl.dropna(how="all").index).astype(int),
+            "has_screening_row": combined.index.isin(sc.dropna(how="all").index).astype(int),
+            "screening_fallback_allowed": screening_allowed.astype(int)
+            .reindex(combined.index)
+            .fillna(1)
+            .astype(int),
+            **source_columns,
+        },
+    )
 
     return combined.reset_index(drop=True)
 
@@ -489,11 +527,10 @@ def build_adni_libra_like_from_wide(df: pd.DataFrame, config: Optional[LibraConf
                 parts.append((s - s.mean()) / s.std(ddof=0))
             else:
                 parts.append(pd.Series(np.nan, index=out.index))
-        stack = np.vstack([p.values for p in parts])
-        tb = np.nanmean(stack, axis=0)
+        tb = _nanmean_rows(*parts)
         out["tobacco_burden"] = np.where(
             smoke_hist == 1,
-            tb,
+            tb.values,
             np.where(smoke_hist == 0, 0.0, np.nan),
         )
     else:
@@ -596,7 +633,9 @@ def build_adni_libra_like_from_wide(df: pd.DataFrame, config: Optional[LibraConf
         r = _to_numeric(out["PTNOTRT"])
         not_retired = pd.Series(np.where(r == 0, 1.0, np.where(r.notna(), 0.0, np.nan)), index=out.index)
 
-    out["social_structural_engagement"] = np.nanmean(np.vstack([partnered.values, community.values, not_retired.values]), axis=0)
+    out["social_structural_engagement"] = _nanmean_rows(
+        partnered, community, not_retired
+    ).values
 
     # Treatment gap
     out["vascular_treatment_gap"] = (
