@@ -20,6 +20,7 @@ from dataclasses import dataclass, fields
 from pathlib import Path
 from typing import Optional, TypeVar
 
+import numpy as np
 import pandas as pd
 
 try:
@@ -61,6 +62,12 @@ class FeatureExportConfig(CohortMatchConfig):
     bmca_output_name: str = "adni_bmca_features.csv"
     write_primary_attached_features: bool = True
     write_combined_attached_features: bool = True
+    write_split_ready_features: bool = True
+    primary_test_fraction: float = 0.2
+    split_random_state: int = 0
+    max_missing_fraction: Optional[float] = 0.8
+    max_mode_fraction: Optional[float] = None
+    min_numeric_variance: Optional[float] = None
 
 
 def _project_config(config: FeatureExportConfig, cls: type[ConfigT]) -> ConfigT:
@@ -75,6 +82,252 @@ def _project_config(config: FeatureExportConfig, cls: type[ConfigT]) -> ConfigT:
 def _append_suffix(filename: str, suffix: str) -> str:
     path = Path(filename)
     return f"{path.stem}{suffix}{path.suffix or '.csv'}"
+
+
+def _metadata_columns(subject_id_col: str) -> set[str]:
+    return {
+        subject_id_col,
+        "pair_id",
+        "group",
+        "transition",
+        "matched_cohort",
+        "analysis_set",
+        "evaluation_eligible",
+        "abs_age_gap",
+        "split",
+        "split_group_source",
+    }
+
+
+def _build_split_subjects_df(
+    matched_subjects_df: pd.DataFrame,
+    config: FeatureExportConfig,
+) -> pd.DataFrame:
+    primary_df = matched_subjects_df.loc[
+        matched_subjects_df["analysis_set"] == "primary"
+    ].copy()
+    augmentation_df = matched_subjects_df.loc[
+        matched_subjects_df["analysis_set"] == "augmentation"
+    ].copy()
+
+    if primary_df["group"].nunique() < 2:
+        raise ValueError(
+            "At least two primary matched groups are required to build a train/test split."
+        )
+
+    unique_groups = np.array(sorted(primary_df["group"].dropna().unique()))
+    rng = np.random.default_rng(config.split_random_state)
+    shuffled_groups = unique_groups.copy()
+    rng.shuffle(shuffled_groups)
+
+    n_test_groups = int(np.ceil(len(shuffled_groups) * config.primary_test_fraction))
+    n_test_groups = min(max(n_test_groups, 1), len(shuffled_groups) - 1)
+
+    test_groups = set(shuffled_groups[:n_test_groups].tolist())
+    train_groups = set(shuffled_groups[n_test_groups:].tolist())
+
+    primary_df["split"] = np.where(
+        primary_df["group"].isin(test_groups), "test", "train"
+    )
+    primary_df["split_group_source"] = "primary"
+
+    augmentation_df["split"] = "train"
+    augmentation_df["split_group_source"] = "augmentation"
+
+    split_subjects_df = pd.concat([primary_df, augmentation_df], ignore_index=True)
+    if not train_groups:
+        raise ValueError("Primary split produced no training groups.")
+    if not test_groups:
+        raise ValueError("Primary split produced no test groups.")
+    return split_subjects_df
+
+
+def _build_cohort_count_audits(
+    cohort_df: pd.DataFrame,
+    split_subjects_df: pd.DataFrame,
+    config: FeatureExportConfig,
+) -> dict[str, pd.DataFrame]:
+    cohort_counts_df = (
+        cohort_df.groupby(["cohort", "eligible_for_matching"], dropna=False)
+        .size()
+        .rename("n_subjects")
+        .reset_index()
+    )
+
+    matched_counts_df = (
+        split_subjects_df.groupby(
+            ["analysis_set", "split", "matched_cohort", "transition"], dropna=False
+        )
+        .agg(
+            n_subjects=(config.subject_id_col, "nunique"),
+            n_groups=("group", "nunique"),
+        )
+        .reset_index()
+    )
+
+    split_summary_df = pd.DataFrame(
+        [
+            {
+                "analysis_set": analysis_set,
+                "split": split,
+                "n_subjects": group[config.subject_id_col].nunique(),
+                "n_groups": group["group"].nunique(),
+                "n_transition": group.loc[
+                    group["transition"] == 1, config.subject_id_col
+                ].nunique(),
+                "n_controls": group.loc[group["transition"] == 0, config.subject_id_col].nunique(),
+            }
+            for (analysis_set, split), group in split_subjects_df.groupby(
+                ["analysis_set", "split"], dropna=False
+            )
+        ]
+    )
+
+    return {
+        "cohort_counts_df": cohort_counts_df,
+        "matched_counts_df": matched_counts_df,
+        "split_summary_df": split_summary_df,
+    }
+
+
+def _build_column_audit(
+    feature_df: pd.DataFrame,
+    split_subjects_df: pd.DataFrame,
+    config: FeatureExportConfig,
+) -> tuple[pd.DataFrame, pd.DataFrame, pd.DataFrame, pd.DataFrame]:
+    merged_df = feature_df.merge(
+        split_subjects_df,
+        on=config.subject_id_col,
+        how="inner",
+    )
+
+    train_df = merged_df.loc[merged_df["split"] == "train"].copy()
+    test_df = merged_df.loc[merged_df["split"] == "test"].copy()
+
+    metadata_cols = _metadata_columns(config.subject_id_col)
+    candidate_feature_cols = [c for c in merged_df.columns if c not in metadata_cols]
+
+    audit_rows = []
+    kept_feature_cols = []
+    for col in candidate_feature_cols:
+        series = train_df[col]
+        observed = int(series.notna().sum())
+        total = int(len(series))
+        missing = total - observed
+        missing_fraction = float(missing / total) if total else np.nan
+        nonmissing = series.dropna()
+        unique_non_missing = int(nonmissing.nunique(dropna=True))
+
+        mode_value = pd.NA
+        mode_count = 0
+        mode_fraction = np.nan
+        if observed:
+            value_counts = nonmissing.value_counts(dropna=False)
+            mode_value = value_counts.index[0]
+            mode_count = int(value_counts.iloc[0])
+            mode_fraction = float(mode_count / observed)
+
+        numeric_series = pd.to_numeric(series, errors="coerce")
+        numeric_observed = int(numeric_series.notna().sum())
+        variance = (
+            float(numeric_series.var(ddof=0))
+            if numeric_observed > 1
+            else np.nan
+        )
+
+        drop_reason = ""
+        if observed == 0:
+            drop_reason = "all_missing_in_train"
+        elif (
+            config.max_missing_fraction is not None
+            and missing_fraction > config.max_missing_fraction
+        ):
+            drop_reason = "high_missingness"
+        elif unique_non_missing <= 1:
+            drop_reason = "constant_in_train"
+        elif (
+            config.max_mode_fraction is not None
+            and pd.notna(mode_fraction)
+            and mode_fraction >= config.max_mode_fraction
+        ):
+            drop_reason = "mode_dominance"
+        elif (
+            config.min_numeric_variance is not None
+            and pd.notna(variance)
+            and variance <= config.min_numeric_variance
+        ):
+            drop_reason = "low_numeric_variance"
+
+        keep = drop_reason == ""
+        if keep:
+            kept_feature_cols.append(col)
+
+        audit_rows.append(
+            {
+                "column": col,
+                "train_non_missing_n": observed,
+                "train_missing_n": missing,
+                "train_missing_fraction": missing_fraction,
+                "train_unique_non_missing_n": unique_non_missing,
+                "train_mode_value": mode_value,
+                "train_mode_count": mode_count,
+                "train_mode_fraction": mode_fraction,
+                "train_numeric_variance": variance,
+                "keep_for_modeling": int(keep),
+                "drop_reason": drop_reason or pd.NA,
+            }
+        )
+
+    column_audit_df = pd.DataFrame(audit_rows).sort_values(
+        ["keep_for_modeling", "train_missing_fraction", "column"],
+        ascending=[True, False, True],
+        kind="stable",
+    )
+
+    model_cols = [config.subject_id_col] + sorted(metadata_cols - {config.subject_id_col})
+    model_cols.extend([c for c in kept_feature_cols if c not in model_cols])
+    model_ready_df = merged_df[model_cols].copy()
+    train_ready_df = train_df[model_cols].copy()
+    test_ready_df = test_df[model_cols].copy()
+
+    carryout_summary_df = pd.DataFrame(
+        [
+            {
+                "n_total_rows": len(merged_df),
+                "n_train_rows": len(train_ready_df),
+                "n_test_rows": len(test_ready_df),
+                "n_train_primary_rows": int(
+                    train_ready_df["analysis_set"].eq("primary").sum()
+                ),
+                "n_train_augmentation_rows": int(
+                    train_ready_df["analysis_set"].eq("augmentation").sum()
+                ),
+                "n_test_primary_rows": int(
+                    test_ready_df["analysis_set"].eq("primary").sum()
+                ),
+                "n_candidate_feature_columns": len(candidate_feature_cols),
+                "n_retained_feature_columns": len(kept_feature_cols),
+                "n_dropped_feature_columns": len(candidate_feature_cols) - len(kept_feature_cols),
+                "n_dropped_all_missing": int(
+                    column_audit_df["drop_reason"].eq("all_missing_in_train").sum()
+                ),
+                "n_dropped_high_missingness": int(
+                    column_audit_df["drop_reason"].eq("high_missingness").sum()
+                ),
+                "n_dropped_constant": int(
+                    column_audit_df["drop_reason"].eq("constant_in_train").sum()
+                ),
+                "n_dropped_mode_dominance": int(
+                    column_audit_df["drop_reason"].eq("mode_dominance").sum()
+                ),
+                "n_dropped_low_numeric_variance": int(
+                    column_audit_df["drop_reason"].eq("low_numeric_variance").sum()
+                ),
+            }
+        ]
+    )
+
+    return model_ready_df, train_ready_df, test_ready_df, column_audit_df, carryout_summary_df
 
 
 def _write_matching_outputs(
@@ -99,6 +352,67 @@ def _write_matching_outputs(
     }
     for key, filename in output_map.items():
         results[key].to_csv(out_dir / filename, index=False)
+
+
+def _write_split_ready_outputs(
+    results: dict[str, pd.DataFrame],
+    out_dir: Path,
+    config: FeatureExportConfig,
+) -> None:
+    if "split_subjects_df" in results:
+        results["split_subjects_df"].to_csv(
+            out_dir / f"{config.output_prefix}_split_subjects.csv", index=False
+        )
+    if "cohort_counts_df" in results:
+        results["cohort_counts_df"].to_csv(
+            out_dir / f"{config.output_prefix}_cohort_counts.csv", index=False
+        )
+    if "matched_counts_df" in results:
+        results["matched_counts_df"].to_csv(
+            out_dir / f"{config.output_prefix}_matched_counts.csv", index=False
+        )
+    if "split_summary_df" in results:
+        results["split_summary_df"].to_csv(
+            out_dir / f"{config.output_prefix}_split_summary.csv", index=False
+        )
+
+    feature_output_names = {
+        "libra": config.libra_output_name,
+        "mrf": config.mrf_output_name,
+        "bmca": config.bmca_output_name,
+    }
+    for prefix, output_name in feature_output_names.items():
+        model_ready_key = f"{prefix}_model_ready_df"
+        train_key = f"{prefix}_train_df"
+        test_key = f"{prefix}_test_df"
+        column_audit_key = f"{prefix}_column_audit_df"
+        carryout_key = f"{prefix}_carryout_summary_df"
+
+        if model_ready_key in results:
+            results[model_ready_key].to_csv(
+                out_dir / _append_suffix(output_name, "_split_ready"),
+                index=False,
+            )
+        if train_key in results:
+            results[train_key].to_csv(
+                out_dir / _append_suffix(output_name, "_train"),
+                index=False,
+            )
+        if test_key in results:
+            results[test_key].to_csv(
+                out_dir / _append_suffix(output_name, "_test"),
+                index=False,
+            )
+        if column_audit_key in results:
+            results[column_audit_key].to_csv(
+                out_dir / _append_suffix(output_name, "_column_audit"),
+                index=False,
+            )
+        if carryout_key in results:
+            results[carryout_key].to_csv(
+                out_dir / _append_suffix(output_name, "_carryout_summary"),
+                index=False,
+            )
 
 
 def build_feature_tables_from_wide(
@@ -182,6 +496,23 @@ def build_feature_tables_and_matches_from_wide(
             subject_id_col=subject_id_col,
         )
 
+    if config.write_split_ready_features:
+        split_subjects_df = _build_split_subjects_df(
+            match_results["combined_matched_subjects_df"], config
+        )
+        results["split_subjects_df"] = split_subjects_df
+        results.update(_build_cohort_count_audits(cohort_df, split_subjects_df, config))
+
+        for prefix in ["libra", "mrf", "bmca"]:
+            model_ready_df, train_df, test_df, column_audit_df, carryout_summary_df = (
+                _build_column_audit(feature_results[f"{prefix}_df"], split_subjects_df, config)
+            )
+            results[f"{prefix}_model_ready_df"] = model_ready_df
+            results[f"{prefix}_train_df"] = train_df
+            results[f"{prefix}_test_df"] = test_df
+            results[f"{prefix}_column_audit_df"] = column_audit_df
+            results[f"{prefix}_carryout_summary_df"] = carryout_summary_df
+
     return results
 
 
@@ -243,6 +574,9 @@ def build_feature_tables_and_matches_from_csv(
             out_dir / _append_suffix(config.bmca_output_name, "_combined_matched"),
             index=False,
         )
+
+    if config.write_split_ready_features:
+        _write_split_ready_outputs(results, out_dir, config)
 
     return results
 
