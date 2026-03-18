@@ -24,6 +24,11 @@ import numpy as np
 import pandas as pd
 
 try:
+    from sklearn.model_selection import StratifiedGroupKFold
+except ModuleNotFoundError:
+    StratifiedGroupKFold = None
+
+try:
     from data_preprocessing_bmca import BMCAConfig, build_adni_bmca_features_from_wide
     from data_preprocessing_libra import LibraConfig, build_adni_libra_like_from_wide
     from data_preprocessing_matched_cohorts import (
@@ -65,6 +70,7 @@ class FeatureExportConfig(CohortMatchConfig):
     write_split_ready_features: bool = True
     primary_test_fraction: float = 0.2
     split_random_state: int = 0
+    split_stratify_col: str = "transition_label"
     max_missing_fraction: Optional[float] = 0.8
     max_mode_fraction: Optional[float] = None
     min_numeric_variance: Optional[float] = None
@@ -90,6 +96,7 @@ def _metadata_columns(subject_id_col: str) -> set[str]:
         "pair_id",
         "group",
         "transition",
+        "transition_label",
         "matched_cohort",
         "analysis_set",
         "evaluation_eligible",
@@ -99,32 +106,80 @@ def _metadata_columns(subject_id_col: str) -> set[str]:
     }
 
 
+def _resolve_split_stratify_column(
+    matched_subjects_df: pd.DataFrame,
+    cohort_df: pd.DataFrame,
+    config: FeatureExportConfig,
+) -> tuple[pd.DataFrame, str]:
+    split_df = matched_subjects_df.copy()
+    stratify_col = config.split_stratify_col
+
+    if stratify_col not in split_df.columns:
+        if stratify_col in cohort_df.columns:
+            split_df = split_df.merge(
+                cohort_df[[config.subject_id_col, stratify_col]],
+                on=config.subject_id_col,
+                how="left",
+            )
+        elif "transition" in split_df.columns:
+            stratify_col = "transition"
+        else:
+            raise ValueError(
+                "No split stratification label is available. "
+                f"Missing '{config.split_stratify_col}' and fallback 'transition'."
+            )
+
+    if split_df[stratify_col].isna().any():
+        if stratify_col != "transition" and "transition" in split_df.columns:
+            split_df[stratify_col] = split_df[stratify_col].fillna(split_df["transition"])
+        if split_df[stratify_col].isna().any():
+            raise ValueError(
+                f"Split stratification column '{stratify_col}' has missing values."
+            )
+
+    return split_df, stratify_col
+
+
 def _build_split_subjects_df(
     matched_subjects_df: pd.DataFrame,
+    cohort_df: pd.DataFrame,
     config: FeatureExportConfig,
 ) -> pd.DataFrame:
-    primary_df = matched_subjects_df.loc[
-        matched_subjects_df["analysis_set"] == "primary"
-    ].copy()
-    augmentation_df = matched_subjects_df.loc[
-        matched_subjects_df["analysis_set"] == "augmentation"
-    ].copy()
+    split_df, stratify_col = _resolve_split_stratify_column(
+        matched_subjects_df, cohort_df, config
+    )
+    primary_df = split_df.loc[split_df["analysis_set"] == "primary"].copy()
+    augmentation_df = split_df.loc[split_df["analysis_set"] == "augmentation"].copy()
 
     if primary_df["group"].nunique() < 2:
         raise ValueError(
             "At least two primary matched groups are required to build a train/test split."
         )
 
-    unique_groups = np.array(sorted(primary_df["group"].dropna().unique()))
-    rng = np.random.default_rng(config.split_random_state)
-    shuffled_groups = unique_groups.copy()
-    rng.shuffle(shuffled_groups)
+    n_primary_groups = primary_df["group"].nunique()
+    target_n_splits = int(round(1.0 / config.primary_test_fraction))
+    label_counts = primary_df[stratify_col].value_counts(dropna=False)
+    min_label_count = int(label_counts.min())
 
-    n_test_groups = int(np.ceil(len(shuffled_groups) * config.primary_test_fraction))
-    n_test_groups = min(max(n_test_groups, 1), len(shuffled_groups) - 1)
-
-    test_groups = set(shuffled_groups[:n_test_groups].tolist())
-    train_groups = set(shuffled_groups[n_test_groups:].tolist())
+    if StratifiedGroupKFold is not None and min_label_count >= 2:
+        n_splits = min(max(target_n_splits, 2), n_primary_groups, min_label_count)
+        splitter = StratifiedGroupKFold(
+            n_splits=n_splits,
+            shuffle=True,
+            random_state=config.split_random_state,
+        )
+        split_iter = splitter.split(
+            primary_df,
+            y=primary_df[stratify_col],
+            groups=primary_df["group"],
+        )
+        train_index, test_index = next(split_iter)
+        train_groups = set(primary_df.iloc[train_index]["group"].unique().tolist())
+        test_groups = set(primary_df.iloc[test_index]["group"].unique().tolist())
+    else:
+        train_groups, test_groups = _greedy_stratified_group_holdout(
+            primary_df, stratify_col, config
+        )
 
     primary_df["split"] = np.where(
         primary_df["group"].isin(test_groups), "test", "train"
@@ -140,6 +195,82 @@ def _build_split_subjects_df(
     if not test_groups:
         raise ValueError("Primary split produced no test groups.")
     return split_subjects_df
+
+
+def _greedy_stratified_group_holdout(
+    primary_df: pd.DataFrame,
+    stratify_col: str,
+    config: FeatureExportConfig,
+) -> tuple[set[int], set[int]]:
+    group_label_counts = (
+        primary_df.groupby(["group", stratify_col], dropna=False)
+        .size()
+        .unstack(fill_value=0)
+        .sort_index()
+    )
+    if len(group_label_counts) < 2:
+        raise ValueError(
+            "At least two primary matched groups are required to build a train/test split."
+        )
+
+    total_groups = len(group_label_counts)
+    target_test_groups = int(round(total_groups * config.primary_test_fraction))
+    target_test_groups = min(max(target_test_groups, 1), total_groups - 1)
+
+    target_test_counts = (
+        group_label_counts.sum(axis=0).to_numpy(dtype=float)
+        * (target_test_groups / total_groups)
+    )
+    current_test_counts = np.zeros(len(group_label_counts.columns), dtype=float)
+
+    rng = np.random.default_rng(config.split_random_state)
+    group_order = list(group_label_counts.index)
+    rng.shuffle(group_order)
+    group_order.sort(
+        key=lambda group: (
+            -float(group_label_counts.loc[group].max()),
+            -float(group_label_counts.loc[group].sum()),
+        )
+    )
+
+    test_groups: list[int] = []
+    for i, group in enumerate(group_order):
+        groups_left = total_groups - i
+        slots_left = target_test_groups - len(test_groups)
+        if slots_left <= 0:
+            break
+        if slots_left >= groups_left:
+            test_groups.extend(group_order[i:])
+            break
+
+        candidate_counts = group_label_counts.loc[group].to_numpy(dtype=float)
+        keep_loss = np.square(current_test_counts - target_test_counts).sum()
+        take_loss = np.square(
+            current_test_counts + candidate_counts - target_test_counts
+        ).sum()
+        if take_loss <= keep_loss:
+            test_groups.append(group)
+            current_test_counts = current_test_counts + candidate_counts
+
+    if len(test_groups) < target_test_groups:
+        remaining_groups = [
+            group for group in group_order if group not in set(test_groups)
+        ]
+        remaining_groups.sort(
+            key=lambda group: float(
+                np.square(
+                    current_test_counts
+                    + group_label_counts.loc[group].to_numpy(dtype=float)
+                    - target_test_counts
+                ).sum()
+            )
+        )
+        needed = target_test_groups - len(test_groups)
+        test_groups.extend(remaining_groups[:needed])
+
+    test_group_set = set(test_groups)
+    train_group_set = set(group_label_counts.index) - test_group_set
+    return train_group_set, test_group_set
 
 
 def _build_cohort_count_audits(
@@ -195,7 +326,16 @@ def _build_column_audit(
     split_subjects_df: pd.DataFrame,
     config: FeatureExportConfig,
 ) -> tuple[pd.DataFrame, pd.DataFrame, pd.DataFrame, pd.DataFrame]:
-    merged_df = feature_df.merge(
+    metadata_cols = _metadata_columns(config.subject_id_col)
+    feature_only_df = feature_df.drop(
+        columns=[
+            col
+            for col in feature_df.columns
+            if col != config.subject_id_col and col in metadata_cols
+        ],
+        errors="ignore",
+    )
+    merged_df = feature_only_df.merge(
         split_subjects_df,
         on=config.subject_id_col,
         how="inner",
@@ -204,7 +344,6 @@ def _build_column_audit(
     train_df = merged_df.loc[merged_df["split"] == "train"].copy()
     test_df = merged_df.loc[merged_df["split"] == "test"].copy()
 
-    metadata_cols = _metadata_columns(config.subject_id_col)
     candidate_feature_cols = [c for c in merged_df.columns if c not in metadata_cols]
 
     audit_rows = []
@@ -284,7 +423,12 @@ def _build_column_audit(
         kind="stable",
     )
 
-    model_cols = [config.subject_id_col] + sorted(metadata_cols - {config.subject_id_col})
+    metadata_cols_present = [config.subject_id_col] + sorted(
+        col
+        for col in metadata_cols - {config.subject_id_col}
+        if col in merged_df.columns
+    )
+    model_cols = metadata_cols_present.copy()
     model_cols.extend([c for c in kept_feature_cols if c not in model_cols])
     model_ready_df = merged_df[model_cols].copy()
     train_ready_df = train_df[model_cols].copy()
@@ -498,7 +642,9 @@ def build_feature_tables_and_matches_from_wide(
 
     if config.write_split_ready_features:
         split_subjects_df = _build_split_subjects_df(
-            match_results["combined_matched_subjects_df"], config
+            match_results["combined_matched_subjects_df"],
+            cohort_df,
+            config,
         )
         results["split_subjects_df"] = split_subjects_df
         results.update(_build_cohort_count_audits(cohort_df, split_subjects_df, config))
