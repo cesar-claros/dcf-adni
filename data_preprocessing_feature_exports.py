@@ -71,8 +71,8 @@ class FeatureExportConfig(CohortMatchConfig):
     primary_test_fraction: float = 0.2
     split_random_state: int = 0
     split_stratify_col: str = "transition_label"
-    max_missing_fraction: Optional[float] = 0.8
-    max_mode_fraction: Optional[float] = None
+    max_missing_fraction: Optional[float] = 0.7
+    max_mode_fraction: Optional[float] = 0.7
     min_numeric_variance: Optional[float] = None
 
 
