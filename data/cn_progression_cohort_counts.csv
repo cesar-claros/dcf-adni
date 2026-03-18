@@ -1,0 +1,7 @@
+cohort,eligible_for_matching,n_subjects
+ci_to_dementia,0,1
+ci_to_dementia,1,404
+stable_cn,0,11
+stable_cn,1,697
+transition,1,176
+,0,3123
