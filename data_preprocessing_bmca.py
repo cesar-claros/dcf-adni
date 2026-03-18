@@ -441,7 +441,7 @@ EXAMPLE = r"""
 import pandas as pd
 from data_preprocessing_bmca import BMCAConfig, build_adni_bmca_features_from_wide
 
-df = pd.read_csv("All_Subjects_My_Table_11Mar2026.csv")
+df = pd.read_csv("data/All_Subjects_My_Table_11Mar2026.csv")
 cfg = BMCAConfig(subject_id_col="subject_id", visit_col="visit", diagnosis_col="DIAGNOSIS")
 
 bmca_df = build_adni_bmca_features_from_wide(df, config=cfg)

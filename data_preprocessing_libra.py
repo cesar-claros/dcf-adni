@@ -726,6 +726,6 @@ cfg = LibraConfig(
 )
 
 libra_df = build_adni_libra_like_from_wide(df, config=cfg)
-libra_df.to_csv("data/adni_libra_like_scores_with_labels.csv", index=False)
+libra_df.to_csv("data/adni_libra.csv", index=False)
 print(libra_df.head())
 """
