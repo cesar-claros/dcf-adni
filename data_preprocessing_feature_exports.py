@@ -74,6 +74,10 @@ class FeatureExportConfig(CohortMatchConfig):
     max_missing_fraction: Optional[float] = 0.7
     max_mode_fraction: Optional[float] = 0.7
     min_numeric_variance: Optional[float] = None
+    max_missing_fraction_diff: Optional[float] = 0.1
+    max_mode_fraction_diff: Optional[float] = 0.2
+    max_standardized_mean_diff: Optional[float] = 0.5
+    max_unique_values_for_mode_comparison: int = 10
 
 
 def _project_config(config: FeatureExportConfig, cls: type[ConfigT]) -> ConfigT:
@@ -321,11 +325,77 @@ def _build_cohort_count_audits(
     }
 
 
+def _compute_first_order_stats(series: pd.Series, prefix: str) -> dict[str, object]:
+    observed = int(series.notna().sum())
+    total = int(len(series))
+    missing = total - observed
+    missing_fraction = float(missing / total) if total else np.nan
+    nonmissing = series.dropna()
+    unique_non_missing = int(nonmissing.nunique(dropna=True))
+
+    mode_value = pd.NA
+    mode_count = 0
+    mode_fraction = np.nan
+    if observed:
+        value_counts = nonmissing.value_counts(dropna=False)
+        mode_value = value_counts.index[0]
+        mode_count = int(value_counts.iloc[0])
+        mode_fraction = float(mode_count / observed)
+
+    numeric_series = pd.to_numeric(series, errors="coerce")
+    numeric_observed = int(numeric_series.notna().sum())
+    numeric_mean = float(numeric_series.mean()) if numeric_observed else np.nan
+    numeric_variance = (
+        float(numeric_series.var(ddof=0)) if numeric_observed > 1 else np.nan
+    )
+
+    return {
+        f"{prefix}_non_missing_n": observed,
+        f"{prefix}_missing_n": missing,
+        f"{prefix}_missing_fraction": missing_fraction,
+        f"{prefix}_unique_non_missing_n": unique_non_missing,
+        f"{prefix}_mode_value": mode_value,
+        f"{prefix}_mode_count": mode_count,
+        f"{prefix}_mode_fraction": mode_fraction,
+        f"{prefix}_numeric_observed_n": numeric_observed,
+        f"{prefix}_numeric_mean": numeric_mean,
+        f"{prefix}_numeric_variance": numeric_variance,
+    }
+
+
+def _values_match(left: object, right: object) -> object:
+    if pd.isna(left) or pd.isna(right):
+        return pd.NA
+    return int(left == right)
+
+
+def _standardized_mean_difference(
+    train_mean: float,
+    train_variance: float,
+    test_mean: float,
+    test_variance: float,
+) -> float:
+    if pd.isna(train_mean) or pd.isna(test_mean):
+        return np.nan
+
+    valid_variances = [
+        value for value in [train_variance, test_variance] if pd.notna(value)
+    ]
+    if not valid_variances:
+        return np.nan
+
+    pooled_std = float(np.sqrt(np.mean(valid_variances)))
+    mean_diff = float(abs(train_mean - test_mean))
+    if pooled_std == 0.0:
+        return 0.0 if mean_diff == 0.0 else np.inf
+    return float(mean_diff / pooled_std)
+
+
 def _build_column_audit(
     feature_df: pd.DataFrame,
     split_subjects_df: pd.DataFrame,
     config: FeatureExportConfig,
-) -> tuple[pd.DataFrame, pd.DataFrame, pd.DataFrame, pd.DataFrame]:
+) -> tuple[pd.DataFrame, pd.DataFrame, pd.DataFrame, pd.DataFrame, pd.DataFrame]:
     metadata_cols = _metadata_columns(config.subject_id_col)
     feature_only_df = feature_df.drop(
         columns=[
@@ -349,51 +419,32 @@ def _build_column_audit(
     audit_rows = []
     kept_feature_cols = []
     for col in candidate_feature_cols:
-        series = train_df[col]
-        observed = int(series.notna().sum())
-        total = int(len(series))
-        missing = total - observed
-        missing_fraction = float(missing / total) if total else np.nan
-        nonmissing = series.dropna()
-        unique_non_missing = int(nonmissing.nunique(dropna=True))
-
-        mode_value = pd.NA
-        mode_count = 0
-        mode_fraction = np.nan
-        if observed:
-            value_counts = nonmissing.value_counts(dropna=False)
-            mode_value = value_counts.index[0]
-            mode_count = int(value_counts.iloc[0])
-            mode_fraction = float(mode_count / observed)
-
-        numeric_series = pd.to_numeric(series, errors="coerce")
-        numeric_observed = int(numeric_series.notna().sum())
-        variance = (
-            float(numeric_series.var(ddof=0))
-            if numeric_observed > 1
-            else np.nan
+        train_stats = _compute_first_order_stats(train_df[col], prefix="train")
+        test_stats = _compute_first_order_stats(test_df[col], prefix="test")
+        combined_unique_non_missing = int(
+            merged_df[col].dropna().nunique(dropna=True)
         )
 
         drop_reason = ""
-        if observed == 0:
+        if train_stats["train_non_missing_n"] == 0:
             drop_reason = "all_missing_in_train"
         elif (
             config.max_missing_fraction is not None
-            and missing_fraction > config.max_missing_fraction
+            and train_stats["train_missing_fraction"] > config.max_missing_fraction
         ):
             drop_reason = "high_missingness"
-        elif unique_non_missing <= 1:
+        elif train_stats["train_unique_non_missing_n"] <= 1:
             drop_reason = "constant_in_train"
         elif (
             config.max_mode_fraction is not None
-            and pd.notna(mode_fraction)
-            and mode_fraction >= config.max_mode_fraction
+            and pd.notna(train_stats["train_mode_fraction"])
+            and train_stats["train_mode_fraction"] >= config.max_mode_fraction
         ):
             drop_reason = "mode_dominance"
         elif (
             config.min_numeric_variance is not None
-            and pd.notna(variance)
-            and variance <= config.min_numeric_variance
+            and pd.notna(train_stats["train_numeric_variance"])
+            and train_stats["train_numeric_variance"] <= config.min_numeric_variance
         ):
             drop_reason = "low_numeric_variance"
 
@@ -401,25 +452,106 @@ def _build_column_audit(
         if keep:
             kept_feature_cols.append(col)
 
+        missing_fraction_abs_diff = (
+            abs(
+                train_stats["train_missing_fraction"]
+                - test_stats["test_missing_fraction"]
+            )
+            if pd.notna(train_stats["train_missing_fraction"])
+            and pd.notna(test_stats["test_missing_fraction"])
+            else np.nan
+        )
+        mode_fraction_abs_diff = (
+            abs(train_stats["train_mode_fraction"] - test_stats["test_mode_fraction"])
+            if pd.notna(train_stats["train_mode_fraction"])
+            and pd.notna(test_stats["test_mode_fraction"])
+            else np.nan
+        )
+        numeric_mean_abs_diff = (
+            abs(train_stats["train_numeric_mean"] - test_stats["test_numeric_mean"])
+            if pd.notna(train_stats["train_numeric_mean"])
+            and pd.notna(test_stats["test_numeric_mean"])
+            else np.nan
+        )
+        standardized_mean_diff = _standardized_mean_difference(
+            train_stats["train_numeric_mean"],
+            train_stats["train_numeric_variance"],
+            test_stats["test_numeric_mean"],
+            test_stats["test_numeric_variance"],
+        )
+
+        mode_comparison_eligible = int(
+            combined_unique_non_missing <= config.max_unique_values_for_mode_comparison
+        )
+        mode_value_match = (
+            _values_match(
+                train_stats["train_mode_value"],
+                test_stats["test_mode_value"],
+            )
+            if mode_comparison_eligible
+            else pd.NA
+        )
+
+        missingness_shift_flag = int(
+            config.max_missing_fraction_diff is not None
+            and pd.notna(missing_fraction_abs_diff)
+            and missing_fraction_abs_diff > config.max_missing_fraction_diff
+        )
+        mode_shift_flag = int(
+            mode_comparison_eligible
+            and (
+                (pd.notna(mode_value_match) and mode_value_match == 0)
+                or (
+                    config.max_mode_fraction_diff is not None
+                    and pd.notna(mode_fraction_abs_diff)
+                    and mode_fraction_abs_diff > config.max_mode_fraction_diff
+                )
+            )
+        )
+        numeric_mean_shift_flag = int(
+            config.max_standardized_mean_diff is not None
+            and pd.notna(standardized_mean_diff)
+            and standardized_mean_diff > config.max_standardized_mean_diff
+        )
+        train_test_shift_flag = int(
+            any(
+                [
+                    missingness_shift_flag,
+                    mode_shift_flag,
+                    numeric_mean_shift_flag,
+                ]
+            )
+        )
+
         audit_rows.append(
             {
                 "column": col,
-                "train_non_missing_n": observed,
-                "train_missing_n": missing,
-                "train_missing_fraction": missing_fraction,
-                "train_unique_non_missing_n": unique_non_missing,
-                "train_mode_value": mode_value,
-                "train_mode_count": mode_count,
-                "train_mode_fraction": mode_fraction,
-                "train_numeric_variance": variance,
+                **train_stats,
+                **test_stats,
+                "combined_unique_non_missing_n": combined_unique_non_missing,
+                "mode_comparison_eligible": mode_comparison_eligible,
+                "mode_value_match": mode_value_match,
+                "missing_fraction_abs_diff": missing_fraction_abs_diff,
+                "mode_fraction_abs_diff": mode_fraction_abs_diff,
+                "numeric_mean_abs_diff": numeric_mean_abs_diff,
+                "numeric_standardized_mean_diff": standardized_mean_diff,
+                "missingness_shift_flag": missingness_shift_flag,
+                "mode_shift_flag": mode_shift_flag,
+                "numeric_mean_shift_flag": numeric_mean_shift_flag,
+                "train_test_shift_flag": train_test_shift_flag,
                 "keep_for_modeling": int(keep),
                 "drop_reason": drop_reason or pd.NA,
             }
         )
 
     column_audit_df = pd.DataFrame(audit_rows).sort_values(
-        ["keep_for_modeling", "train_missing_fraction", "column"],
-        ascending=[True, False, True],
+        [
+            "keep_for_modeling",
+            "train_test_shift_flag",
+            "train_missing_fraction",
+            "column",
+        ],
+        ascending=[True, False, False, True],
         kind="stable",
     )
 
@@ -466,6 +598,22 @@ def _build_column_audit(
                 ),
                 "n_dropped_low_numeric_variance": int(
                     column_audit_df["drop_reason"].eq("low_numeric_variance").sum()
+                ),
+                "n_train_test_shift_flagged": int(
+                    column_audit_df["train_test_shift_flag"].sum()
+                ),
+                "n_retained_train_test_shift_flagged": int(
+                    column_audit_df.loc[
+                        column_audit_df["keep_for_modeling"] == 1,
+                        "train_test_shift_flag",
+                    ].sum()
+                ),
+                "n_missingness_shift_flagged": int(
+                    column_audit_df["missingness_shift_flag"].sum()
+                ),
+                "n_mode_shift_flagged": int(column_audit_df["mode_shift_flag"].sum()),
+                "n_numeric_mean_shift_flagged": int(
+                    column_audit_df["numeric_mean_shift_flag"].sum()
                 ),
             }
         ]
