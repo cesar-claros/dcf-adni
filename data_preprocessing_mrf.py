@@ -172,22 +172,42 @@ def build_adni_mrf_features_from_wide(
     else:
         out["eGFR"] = np.nan
 
-    smoke_hist = (
-        _ensure_binary(out["MH16SMOK"])
-        if "MH16SMOK" in out.columns
-        else pd.Series(np.nan, index=out.index)
-    )
-    smoking_years_since_quit = (
-        _to_numeric(out["MH16CSMOK"])
-        if "MH16CSMOK" in out.columns
-        else pd.Series(np.nan, index=out.index)
-    )
+    # Smoking
+    # MH16CSMOK = "If no longer smoking, years since quit." Intentionally blank for current
+    # smokers; filled only for ex-smokers. MH16CSMOK == 0 does not occur in ADNI.
+    #
+    # Look-ahead: MH16CSMOK is frequently missing at screening even for confirmed ex-smokers
+    # who report a quit year at later follow-up visits. Empirically, 100 of 374 ever-smokers
+    # with NaN MH16CSMOK at screening have MH16CSMOK > 0 at some later visit. We recover
+    # these by taking the earliest non-NaN value across all visits and back-filling it into
+    # the baseline row (updating out["MH16CSMOK"] in place so tobacco_burden also benefits).
+    smoke_hist = _ensure_binary(out["MH16SMOK"]) if "MH16SMOK" in out.columns else pd.Series(np.nan, index=out.index)
+
+    if "MH16CSMOK" in df.columns and "MH16CSMOK" in out.columns:
+        earliest_csmok = (
+            df[df["MH16CSMOK"].notna()]
+            .sort_values(config.visit_col)
+            .groupby(config.subject_id_col)["MH16CSMOK"]
+            .first()
+        )
+        missing_mask = out["MH16CSMOK"].isna()
+        out.loc[missing_mask, "MH16CSMOK"] = (
+            out.loc[missing_mask, config.subject_id_col].map(earliest_csmok)
+        )
+
+    yrs_quit = _to_numeric(out["MH16CSMOK"]) if "MH16CSMOK" in out.columns else pd.Series(np.nan, index=out.index)
+
     out["smoking_history"] = smoke_hist
-    out["current_smoking"] = np.where(
-        (smoke_hist == 1) & (smoking_years_since_quit.fillna(0) <= 0),
-        1.0,
-        np.where(smoke_hist == 0, 0.0, np.nan),
-    )
+    # current_smoking = 0: never smoked OR confirmed ex-smoker (yrs_quit > 0 after look-ahead)
+    # current_smoking = 1: ever-smoked with no quit year found at any visit (assume still smoking)
+    # current_smoking = NaN: MH16SMOK not recorded
+    out["current_smoking"] = pd.Series(np.where(
+        smoke_hist == 0, 0.0,
+        np.where(
+            (smoke_hist == 1) & (yrs_quit > 0), 0.0,
+            np.where(smoke_hist == 1, 1.0, np.nan),
+        )
+    ), index=out.index)
     out["smoking"] = out["current_smoking"]
     out["smoking_packs_per_day"] = (
         _to_numeric(out["MH16ASMOK"]) if "MH16ASMOK" in out.columns else np.nan
@@ -195,7 +215,7 @@ def build_adni_mrf_features_from_wide(
     out["smoking_duration_years"] = (
         _to_numeric(out["MH16BSMOK"]) if "MH16BSMOK" in out.columns else np.nan
     )
-    out["smoking_years_since_quit"] = smoking_years_since_quit
+    out["smoking_years_since_quit"] = yrs_quit
 
     tobacco_parts = [
         _zscore(out["smoking_packs_per_day"]),
@@ -205,29 +225,56 @@ def build_adni_mrf_features_from_wide(
     out["tobacco_burden"] = _mean_from_parts(*tobacco_parts)
     out.loc[out["smoking_history"] == 0, "tobacco_burden"] = 0.0
 
-    alcohol_hist = (
-        _ensure_binary(out["MH14ALCH"])
-        if "MH14ALCH" in out.columns
-        else pd.Series(np.nan, index=out.index)
-    )
-    alcohol_years_since_end = (
-        _to_numeric(out["MH14CALCH"])
-        if "MH14CALCH" in out.columns
-        else pd.Series(np.nan, index=out.index)
-    )
+    # Alcohol abuse
+    # MH14CALCH = "If not currently having alcohol abuse, years since end of problem."
+    # Unlike MH16CSMOK (smoking), MH14CALCH == 0 does occur in ADNI (2 subjects), meaning
+    # the abuse ended in the same calendar year as the visit. MH14CALCH == 0 is therefore
+    # treated as current — not as a synonym for missing.
+    #
+    # Look-ahead: MH14CALCH is missing at screening for some confirmed ex-abusers who
+    # report an end year at a later visit. Empirically, 5 of 33 abusers with NaN MH14CALCH
+    # at screening have MH14CALCH at some later visit. We recover these by taking the
+    # earliest non-NaN value across all visits and back-filling it into the baseline row
+    # (updating out["MH14CALCH"] in place so alcohol_burden also benefits).
+    #
+    # Classification after look-ahead:
+    #   current_alcohol_abuse = 0 : no history (MH14ALCH == 0)
+    #                         = 0 : confirmed ex-abuser (MH14CALCH > 0)
+    #                         = 1 : ended same year (MH14CALCH == 0) or no end year found
+    #                               at any visit — assumed still current (parallel to
+    #                               smoking convention)
+    #                         = NaN: MH14ALCH not recorded
+    alcohol_hist = _ensure_binary(out["MH14ALCH"]) if "MH14ALCH" in out.columns else pd.Series(np.nan, index=out.index)
+
+    if "MH14CALCH" in df.columns and "MH14CALCH" in out.columns:
+        earliest_calch = (
+            df[df["MH14CALCH"].notna()]
+            .sort_values(config.visit_col)
+            .groupby(config.subject_id_col)["MH14CALCH"]
+            .first()
+        )
+        missing_mask = out["MH14CALCH"].isna()
+        out.loc[missing_mask, "MH14CALCH"] = (
+            out.loc[missing_mask, config.subject_id_col].map(earliest_calch)
+        )
+
+    yrs_since_end = _to_numeric(out["MH14CALCH"]) if "MH14CALCH" in out.columns else pd.Series(np.nan, index=out.index)
+
     out["alcohol_abuse_history"] = alcohol_hist
-    out["current_alcohol_abuse"] = np.where(
-        (alcohol_hist == 1) & (alcohol_years_since_end.fillna(0) <= 0),
-        1.0,
-        np.where(alcohol_hist == 0, 0.0, np.nan),
-    )
+    out["current_alcohol_abuse"] = pd.Series(np.where(
+        alcohol_hist == 0, 0.0,
+        np.where(
+            (alcohol_hist == 1) & (yrs_since_end > 0), 0.0,
+            np.where(alcohol_hist == 1, 1.0, np.nan),
+        )
+    ), index=out.index)
     out["alcohol_drinks_per_day"] = (
         _to_numeric(out["MH14AALCH"]) if "MH14AALCH" in out.columns else np.nan
     )
     out["alcohol_abuse_duration_years"] = (
         _to_numeric(out["MH14BALCH"]) if "MH14BALCH" in out.columns else np.nan
     )
-    out["alcohol_years_since_end"] = alcohol_years_since_end
+    out["alcohol_years_since_end"] = yrs_since_end
 
     alcohol_parts = [
         _zscore(out["alcohol_drinks_per_day"]),
@@ -286,6 +333,16 @@ def build_adni_mrf_features_from_wide(
     ).astype(float)
     out.loc[pd.Series(out["serum_cholesterol"]).isna() & lipid_med.isna(), "high_cholesterol"] = np.nan
 
+    # Heart disease
+    # The LIBRA "heart disease" component (Neuffer et al. 2024, Table 1) covers:
+    # "history of myocardial infarction, hospitalized stroke, coronary surgery/
+    # angioplasty, history of leg artery surgery if arteritis of the lower limbs."
+    # Stroke and TIA are therefore part of the canonical definition, not a broadening
+    # of it. ADNI's MH4CARD captures cardiac history but does not explicitly include
+    # stroke, so text matching on MHDESC is used to recover stroke and TIA cases that
+    # MH4CARD would otherwise miss. "heart failure" and "ischemic heart disease" are
+    # MRF additions beyond the canonical LIBRA set; they do not appear in the LIBRA
+    # file but are plausibly prevention-relevant cardiovascular events.
     heart_history = (
         _ensure_binary(out["MH4CARD"])
         if "MH4CARD" in out.columns
@@ -304,6 +361,12 @@ def build_adni_mrf_features_from_wide(
                 "bypass",
                 "stent",
                 "angioplasty",
+                "coronary surgery",
+                "stroke",
+                "tia",
+                "transient ischemic attack",
+                "peripheral vascular disease",
+                "pvd",
                 "heart failure",
                 "ischemic heart disease",
             },
@@ -454,7 +517,24 @@ def build_adni_mrf_features_from_wide(
             0.0,
         )
     )
+    # Set to NaN when all three measurement sources are missing; the sum of np.where
+    # calls above would otherwise return 0.0 for subjects with no BP, cholesterol,
+    # or glucose data, which is indistinguishable from a gap-free profile.
+    sys = out["systolic_bp"]
+    dia = out["diastolic_bp"]
+    chol = out["serum_cholesterol"]
+    glu = out["serum_glucose"]
+    out.loc[sys.isna() & dia.isna() & chol.isna() & glu.isna(), "vascular_treatment_gap"] = np.nan
 
+    # -------------------------------------------------------------------------
+    # libra_supported_raw: fillna(0) bias warning
+    # -------------------------------------------------------------------------
+    # Missing components are filled with 0 before summing, which treats absence
+    # of data as absence of risk. Empirically, 57.9% of subjects at screening are
+    # missing at least one of the 8 supported components, with a median suppressed
+    # weight-sum of 6.3 points. Only 42.1% of subjects have all 8 observed.
+    # Prefer libra_supported_rescaled_0_100 for downstream modelling.
+    # -------------------------------------------------------------------------
     out["libra_supported_raw"] = sum(
         LIBRA_WEIGHTS_2024[f] * out[f].fillna(0) for f in SUPPORTED_ADNI_CANONICAL
     )

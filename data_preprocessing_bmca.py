@@ -135,6 +135,12 @@ def build_adni_bmca_features_from_wide(
     )
     out = _replace_or_add_columns(out, biomarker_features)
 
+    # delayed_cue_used (LDELCUE): test artifact indicator, not a cognitive measure.
+    # LDELCUE = 1 means the examiner provided a semantic cue during the Logical Memory
+    # delayed recall trial. When a cue is used, LDELTOTAL is artificially inflated —
+    # the subject's unaided recall is unknown. Empirically, 24% of non-missing trials
+    # have LDELCUE = 1. Models that use LDELTOTAL should condition on or adjust for
+    # LDELCUE; the two variables should not be treated as independent features.
     cognitive_raw = {
         "mmse_total": "MMSCORE",
         "logical_memory_immediate": "LIMMTOTAL",
@@ -288,33 +294,29 @@ def build_adni_bmca_features_from_wide(
         },
     )
 
-    depression_npi_cols = [
-        "NPID1",
-        "NPID2",
-        "NPID3",
-        "NPID4",
-        "NPID5",
-        "NPID6",
-        "NPID7",
-        "NPID8",
-        "NPID9A",
-        "NPID9B",
-        "NPID9C",
-    ]
-    sleep_npi_cols = [
-        "NPIK1",
-        "NPIK2",
-        "NPIK3",
-        "NPIK4",
-        "NPIK5",
-        "NPIK6",
-        "NPIK7",
-        "NPIK8",
-        "NPIK9A",
-        "NPIK9B",
-        "NPIK9C",
-    ]
-    npi_raw_cols = depression_npi_cols + sleep_npi_cols + ["NPIDTOT", "NPIKTOT", "NPIKSEV"]
+    # NPI item columns split by scale type.
+    #
+    # NPID1–NPID8 and NPIK1–NPIK8 are binary screening questions (0=No, 1=Yes)
+    # that ask whether a specific symptom is present in the depression or sleep domain.
+    # Summing these gives a clinically interpretable symptom count (0–8 per domain).
+    #
+    # NPID9A/NPIK9A: Frequency rating of the overall domain (1=Occasionally to 4=Very frequently)
+    # NPID9B/NPIK9B: Severity rating of the overall domain (1=Mild, 2=Moderate, 3=Marked)
+    # NPID9C/NPIK9C: Caregiver distress (0=Not at all to 5=Very severely)
+    #
+    # These three sub-items use different scales and cannot be summed with the binary items
+    # or with each other. The domain total score (NPIDTOT / NPIKTOT = Frequency × Severity,
+    # range 0–12) is already the standard NPI domain summary and is exported separately.
+    # Empirically, sum(NPID1–9C) matches NPIDTOT in only 0.2% of baseline rows, confirming
+    # that NPIDTOT is not simply the sum of the individual columns.
+    depression_npi_binary = ["NPID1", "NPID2", "NPID3", "NPID4", "NPID5", "NPID6", "NPID7", "NPID8"]
+    depression_npi_subcols = ["NPID9A", "NPID9B", "NPID9C"]
+    sleep_npi_binary = ["NPIK1", "NPIK2", "NPIK3", "NPIK4", "NPIK5", "NPIK6", "NPIK7", "NPIK8"]
+    sleep_npi_subcols = ["NPIK9A", "NPIK9B", "NPIK9C"]
+    depression_npi_cols = depression_npi_binary + depression_npi_subcols
+    sleep_npi_cols = sleep_npi_binary + sleep_npi_subcols
+
+    npi_raw_cols = depression_npi_cols + sleep_npi_cols + ["NPIDTOT", "NPIKTOT", "NPIDSEV", "NPIKSEV"]
     out = _replace_or_add_columns(
         out,
         {
@@ -330,10 +332,12 @@ def build_adni_bmca_features_from_wide(
         out,
         {
             "npi_depression_item_score": out["NPIDTOT"],
+            "npi_depression_severity": out["NPIDSEV"],
             "npi_sleep_item_score": out["NPIKTOT"],
             "npi_sleep_severity": out["NPIKSEV"],
-            "npi_depression_domain_sum": _sum_with_nan(out, depression_npi_cols),
-            "npi_sleep_domain_sum": _sum_with_nan(out, sleep_npi_cols),
+            # Symptom counts: sum only the binary 0/1 items, not frequency/severity/distress
+            "npi_depression_symptom_count": _sum_with_nan(out, depression_npi_binary),
+            "npi_sleep_symptom_count": _sum_with_nan(out, sleep_npi_binary),
         },
     )
 
@@ -383,10 +387,11 @@ def build_adni_bmca_features_from_wide(
         "faq_reminders",
         "faq_travel",
         "npi_depression_item_score",
+        "npi_depression_severity",
         "npi_sleep_item_score",
         "npi_sleep_severity",
-        "npi_depression_domain_sum",
-        "npi_sleep_domain_sum",
+        "npi_depression_symptom_count",
+        "npi_sleep_symptom_count",
         "somatic_complaints",
         "hachinski_hypertension_history",
         "hachinski_stroke_history",

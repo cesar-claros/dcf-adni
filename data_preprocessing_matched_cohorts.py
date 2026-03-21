@@ -51,7 +51,16 @@ class CohortMatchConfig(LibraConfig):
     entry_group_col: str = "entry_research_group"
     transition_baseline_diag: int = 1
     dementia_diag_code: int = 3
-    impairment_entry_groups: tuple[str, ...] = ("MCI", "EMCI", "SMC", "LMCI")
+    # impairment_entry_groups: entry research groups eligible for the ci_to_dementia
+    # augmentation cohort. A subject in one of these groups who later receives a dementia
+    # diagnosis (DIAGNOSIS == 3) at a follow-up visit >= 12 months is labelled
+    # ci_to_dementia_label = 1.
+    #
+    # SMC (Subjective Memory Complaint) is excluded: ADNI's SMC cohort is cognitively
+    # normal by objective testing (79/80 SMC subjects have DIAGNOSIS = 1 at baseline),
+    # and only 4/80 ever progress to dementia. Grouping them with MCI/EMCI/LMCI would
+    # conflate subjective concern with objective impairment in the augmentation case set.
+    impairment_entry_groups: tuple[str, ...] = ("MCI", "EMCI", "LMCI")
     exclude_baseline_dementia_from_impairment: bool = True
     max_age_gap_years: Optional[float] = None
     require_full_matching: bool = True
@@ -324,7 +333,21 @@ def match_transition_to_stable_cn(
         ].copy()
         match_frames.append(_solve_stratum_lp(trans_stratum, ctrl_stratum, config))
 
-    matched_pairs_df = pd.concat(match_frames, ignore_index=True)
+    primary_pair_columns = [
+        "transition_subject_id",
+        "control_subject_id",
+        config.genotype_col,
+        config.sex_col,
+        f"transition_{config.age_col}",
+        f"control_{config.age_col}",
+        "abs_age_gap",
+        "first_conversion_month",
+    ]
+    matched_pairs_df = (
+        pd.concat(match_frames, ignore_index=True)
+        if match_frames
+        else pd.DataFrame(columns=primary_pair_columns)
+    )
     matched_pairs_df["pair_id"] = range(1, len(matched_pairs_df) + 1)
     matched_pairs_df["group"] = matched_pairs_df["pair_id"].astype(int)
     matched_pairs_df["analysis_set"] = "primary"
@@ -484,8 +507,19 @@ def match_remaining_stable_to_ci_dementia(
             for i, j, _ in feasible_pairs
         }
         if config.require_full_augmentation_matching:
+            # All stable subjects must be matched (== 1 constraints below).
+            # Objective: minimize total age gap, identical to the primary stage.
             problem += pulp.lpSum(cost * x[(i, j)] for i, j, cost in feasible_pairs)
         else:
+            # Stable subjects may be left unmatched (<= 1 constraints below).
+            # Objective: two-priority scalarization —
+            #   Priority 1: maximize the number of matched pairs.
+            #   Priority 2: among solutions with the same match count, minimize total age gap.
+            #
+            # Implementation: reward = Σ(all edge costs) + 1, so matching any additional
+            # pair always increases the objective more than its own cost can decrease it,
+            # regardless of which pair is added. This makes match-count strictly dominant
+            # over age-gap minimization without requiring a hierarchical solver.
             reward = sum(cost for _, _, cost in feasible_pairs) + 1.0
             problem.sense = pulp.LpMaximize
             problem += (

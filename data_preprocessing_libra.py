@@ -516,14 +516,42 @@ def build_adni_libra_like_from_wide(df: pd.DataFrame, config: Optional[LibraConf
         out["eGFR"] = np.nan
 
     # Smoking
+    # MH16CSMOK = "If no longer smoking, years since quit." Intentionally blank for current
+    # smokers; filled only for ex-smokers. MH16CSMOK == 0 does not occur in ADNI.
+    #
+    # Look-ahead: MH16CSMOK is frequently missing at screening even for confirmed ex-smokers
+    # who report a quit year at later follow-up visits. Empirically, 100 of 374 ever-smokers
+    # with NaN MH16CSMOK at screening have MH16CSMOK > 0 at some later visit. We recover
+    # these by taking the earliest non-NaN value across all visits and back-filling it into
+    # the baseline row (updating out["MH16CSMOK"] in place so tobacco_burden also benefits).
     smoke_hist = _ensure_binary(out["MH16SMOK"]) if "MH16SMOK" in out.columns else pd.Series(np.nan, index=out.index)
-    yrs_quit = _to_numeric(out["MH16CSMOK"]) if "MH16CSMOK" in out.columns else pd.Series(np.nan, index=out.index)
-    if config.use_current_smoking_proxy:
-        out["smoking"] = np.where(
-            (smoke_hist == 1) & (yrs_quit.fillna(0) <= 0),
-            1.0,
-            np.where(smoke_hist == 0, 0.0, np.nan),
+
+    if "MH16CSMOK" in df.columns and "MH16CSMOK" in out.columns:
+        earliest_csmok = (
+            df[df["MH16CSMOK"].notna()]
+            .sort_values(config.visit_col)
+            .groupby(config.subject_id_col)["MH16CSMOK"]
+            .first()
         )
+        missing_mask = out["MH16CSMOK"].isna()
+        out.loc[missing_mask, "MH16CSMOK"] = (
+            out.loc[missing_mask, config.subject_id_col].map(earliest_csmok)
+        )
+
+    yrs_quit = _to_numeric(out["MH16CSMOK"]) if "MH16CSMOK" in out.columns else pd.Series(np.nan, index=out.index)
+
+    if config.use_current_smoking_proxy:
+        # smoking = 0: never smoked (smoke_hist == 0) OR confirmed ex-smoker (yrs_quit > 0
+        #              after look-ahead).
+        # smoking = 1: ever-smoked with no quit year found at any visit (assume still smoking).
+        # smoking = NaN: MH16SMOK not recorded.
+        out["smoking"] = pd.Series(np.where(
+            smoke_hist == 0, 0.0,
+            np.where(
+                (smoke_hist == 1) & (yrs_quit > 0), 0.0,
+                np.where(smoke_hist == 1, 1.0, np.nan),
+            )
+        ), index=out.index)
     else:
         out["smoking"] = smoke_hist
 
@@ -546,6 +574,27 @@ def build_adni_libra_like_from_wide(df: pd.DataFrame, config: Optional[LibraConf
         )
     else:
         out["tobacco_burden"] = np.nan
+
+    # -------------------------------------------------------------------------
+    # NaN propagation design note (applies to all binary indicators below)
+    # -------------------------------------------------------------------------
+    # Each indicator is computed as an OR across multiple evidence sources. When
+    # a source value is NaN, pandas/numpy comparisons (e.g. NaN >= 140) evaluate
+    # to False, so a missing source contributes 0 rather than NaN to the OR.
+    # An indicator is set to NaN only when EVERY evidence source is missing.
+    #
+    # Conservative assumption: "no positive evidence observed" is treated as
+    # "risk factor absent" (0), not "unknown" (NaN).
+    #
+    # Empirical justification for this choice: ADNI collects lab values and vital
+    # signs as a panel at each visit, so within each indicator the primary sources
+    # (e.g. VSBPSYS + VSBPDIA, RCT20, RCT11) are either both observed or both
+    # missing — partial missingness among panel sources is 0% at screening in
+    # this dataset. The OR-based logic therefore only encounters partial
+    # missingness when a text/medication source is present but the lab is absent,
+    # which in practice does not occur for the lab-primary indicators. The one
+    # exception is depression (see note there).
+    # -------------------------------------------------------------------------
 
     # Hypertension
     sys = _to_numeric(out["VSBPSYS"]) if "VSBPSYS" in out.columns else pd.Series(np.nan, index=out.index)
@@ -578,6 +627,13 @@ def build_adni_libra_like_from_wide(df: pd.DataFrame, config: Optional[LibraConf
     out["hyperglycemia_status"] = np.where(glu.notna(), (glu >= gthr).astype(float), np.nan)
 
     # Heart disease
+    # The LIBRA "heart disease" component (Neuffer et al. 2024, Table 1) covers:
+    # "history of myocardial infarction, hospitalized stroke, coronary surgery/
+    # angioplasty, history of leg artery surgery if arteritis of the lower limbs."
+    # Stroke and TIA are therefore part of the canonical definition, not a
+    # broadening of it. ADNI's MH4CARD captures cardiac history but does not
+    # explicitly include stroke, so text matching on MHDESC is used to recover
+    # stroke and TIA cases that MH4CARD would otherwise miss.
     mh4 = _ensure_binary(out["MH4CARD"]) if "MH4CARD" in out.columns else pd.Series(np.nan, index=out.index)
     heart_text = pd.Series(False, index=out.index)
     if "MHDESC" in out.columns:
@@ -607,6 +663,20 @@ def build_adni_libra_like_from_wide(df: pd.DataFrame, config: Optional[LibraConf
     out.loc[pd.Series(egfr_low, index=out.index).isna() & mh12.isna() & (~renal_text), "renal_dysfunction"] = np.nan
 
     # Depression
+    # Instrument substitution: the canonical LIBRA definition (Neuffer et al. 2024, Table 1)
+    # uses the Center for Epidemiologic Studies-Depression (CES-D) scale with sex-specific
+    # thresholds (>= 17 for men, >= 23 for women). ADNI administers the Geriatric Depression
+    # Scale (GDS) instead. GDS >= 6 is the standard clinical cutoff for probable depression
+    # and is applied uniformly across sexes — sex-stratified thresholds are not part of GDS
+    # validation. GDS omits somatic items that confound depression screening in older adults,
+    # making it arguably better suited to an aging cohort than CES-D, but direct comparability
+    # with published LIBRA scores using CES-D should not be assumed.
+    # Partial missingness note: unlike the panel-collected indicators above,
+    # depression sources are administered independently. In this dataset, 27
+    # subjects at screening have DXDEP but not GDTOTAL. Of those, 3 have DXDEP=1
+    # (correctly captured positive) and 24 have DXDEP=0 with GDS missing — these
+    # 24 are conservatively coded as depression=0 per the design note above, but
+    # could be false negatives if their GDS would have met the threshold.
     gd = _to_numeric(out["GDTOTAL"]) if "GDTOTAL" in out.columns else pd.Series(np.nan, index=out.index)
     dxdep = _ensure_binary(out["DXDEP"]) if "DXDEP" in out.columns else pd.Series(np.nan, index=out.index)
     bcdep = _ensure_binary(out["BCDEPRES"]) if "BCDEPRES" in out.columns else pd.Series(np.nan, index=out.index)
@@ -645,13 +715,39 @@ def build_adni_libra_like_from_wide(df: pd.DataFrame, config: Optional[LibraConf
     ).values
 
     # Treatment gap
+    # Count of vascular risk domains that are elevated but untreated (0–3).
+    # Missing measurements contribute 0 per the design note above (NaN-as-False).
+    # Exception: set to NaN when ALL three primary measurement sources (BP, chol,
+    # glucose) are absent — consistent with the "all evidence missing → NaN" rule
+    # used for the LIBRA binary indicators. Empirically, 380 subjects at screening
+    # (8.6%) fall into this category.
     out["vascular_treatment_gap"] = (
         np.where(((sys >= 140) | (dia >= 90)) & ~(htn_med == 1), 1.0, 0.0) +
         np.where((chol >= cthr) & ~(lipid_med == 1), 1.0, 0.0) +
         np.where((glu >= gthr) & ~(dm_med == 1), 1.0, 0.0)
     )
+    out.loc[sys.isna() & dia.isna() & chol.isna() & glu.isna(), "vascular_treatment_gap"] = np.nan
 
     # Summary scores
+    # -------------------------------------------------------------------------
+    # libra_supported_raw: fillna(0) bias warning
+    # -------------------------------------------------------------------------
+    # Missing components are filled with 0 before summing, which treats absence
+    # of data as absence of risk. For risk factors (positive weights), this
+    # systematically underestimates the score for subjects with incomplete data.
+    # Empirically, 57.9% of subjects at screening are missing at least one of
+    # the 8 supported components, with a median suppressed weight-sum of 6.3
+    # points (on a scale that ranges from roughly -5.9 to +12.7 in published
+    # cohorts). Only 42.1% of subjects have all 8 components observed.
+    #
+    # libra_supported_raw is preserved for comparability with published LIBRA
+    # values (which also use fillna(0)) but should NOT be used as the primary
+    # score in downstream modelling. Prefer libra_supported_rescaled_0_100,
+    # which uses only observed components and normalises to [0, 100] within
+    # each subject's observed set. Note that the rescaled score is NaN for
+    # subjects with fewer than min_supported_components_for_rescale (default 4)
+    # observed components — always check libra_supported_n_observed alongside it.
+    # -------------------------------------------------------------------------
     out["libra_supported_raw"] = sum(LIBRA_WEIGHTS_2024[f] * out[f].fillna(0) for f in SUPPORTED_ADNI_CANONICAL)
     out["libra_supported_n_observed"] = out[SUPPORTED_ADNI_CANONICAL].notna().sum(axis=1)
     out["libra_supported_rescaled_0_100"] = out.apply(

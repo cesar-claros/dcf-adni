@@ -78,6 +78,13 @@ class FeatureExportConfig(CohortMatchConfig):
     max_mode_fraction_diff: Optional[float] = 0.2
     max_standardized_mean_diff: Optional[float] = 0.5
     max_unique_values_for_mode_comparison: int = 10
+    # MRF-specific flags (passed through to MRFConfig via _project_config)
+    include_social_context: bool = True
+    include_social_interactions: bool = True
+    min_features_for_rescale: int = 5
+    # BMCA-specific flags (passed through to BMCAConfig via _project_config)
+    include_item_level_faq: bool = True
+    include_item_level_npi: bool = True
 
 
 def _project_config(config: FeatureExportConfig, cls: type[ConfigT]) -> ConfigT:
@@ -438,7 +445,7 @@ def _build_column_audit(
         elif (
             config.max_mode_fraction is not None
             and pd.notna(train_stats["train_mode_fraction"])
-            and train_stats["train_mode_fraction"] >= config.max_mode_fraction
+            and train_stats["train_mode_fraction"] > config.max_mode_fraction
         ):
             drop_reason = "mode_dominance"
         elif (
