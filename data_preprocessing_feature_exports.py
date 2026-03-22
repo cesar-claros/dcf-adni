@@ -101,6 +101,13 @@ def _append_suffix(filename: str, suffix: str) -> str:
     return f"{path.stem}{suffix}{path.suffix or '.csv'}"
 
 
+def _drop_excluded_subjects(df: pd.DataFrame, subject_id_col: str) -> pd.DataFrame:
+    """Remove rows for site-381 subjects (IDs matching '381_S_*') flagged for
+    data quality issues by the ADNI data team."""
+    mask = df[subject_id_col].str.match(r"^381_S_\d+$", na=False)
+    return df.loc[~mask].reset_index(drop=True)
+
+
 def _metadata_columns(subject_id_col: str) -> set[str]:
     return {
         subject_id_col,
@@ -723,6 +730,8 @@ def build_feature_tables_from_wide(
     if config is None:
         config = FeatureExportConfig()
 
+    df = _drop_excluded_subjects(df, config.subject_id_col)
+
     libra_config = _project_config(config, LibraConfig)
     mrf_config = _project_config(config, MRFConfig)
     bmca_config = _project_config(config, BMCAConfig)
@@ -747,6 +756,8 @@ def build_feature_tables_and_matches_from_wide(
     """
     if config is None:
         config = FeatureExportConfig()
+
+    df = _drop_excluded_subjects(df, config.subject_id_col)
 
     match_config = _project_config(config, CohortMatchConfig)
     feature_results = build_feature_tables_from_wide(df, config=config)
