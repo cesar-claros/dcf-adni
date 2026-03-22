@@ -1,2 +1,2 @@
 model,auc,auc_ci_low_95,auc_ci_high_95,best_inner_cv_auc,param_iterations,param_learning_rate,param_depth,param_l2_leaf_reg,param_bagging_temperature,param_border_count,param_min_data_in_leaf,param_random_strength
-bmca_catboost,0.7855,0.6759,0.8866,0.9367,844,0.0028945415248600817,5,0.0010377493928628628,0.5866637436096432,131,17,6.397793535118938
+bmca_catboost,0.7847,0.6775,0.8812,0.8112,494,0.013214840909052613,5,0.27411825194821693,0.6649210301785468,204,29,9.063369864518384
