@@ -341,6 +341,18 @@ def build_adni_bmca_features_from_wide(
         },
     )
 
+    # GDS total score: continuous self-report depression severity (0–30).
+    # Moved from MRF to BMCA because in a CN cohort the continuous GDS score
+    # acts as a clinical assessment (prodromal neuropsychiatric signal) rather
+    # than a background modifiable risk factor. The binary depression indicator
+    # (GDS ≥ threshold OR diagnosis OR medication) remains in MRF, consistent
+    # with the LIBRA framework. Named gds_depression_severity to distinguish
+    # from the caregiver-reported npi_depression_severity.
+    out["gds_depression_severity"] = (
+        _to_numeric(out["GDTOTAL"]) if "GDTOTAL" in out.columns
+        else pd.Series(np.nan, index=out.index)
+    )
+
     preferred_cols = [
         config.subject_id_col,
         "has_baseline_row",
@@ -388,9 +400,10 @@ def build_adni_bmca_features_from_wide(
         "faq_travel",
         "npi_depression_item_score",
         "npi_depression_severity",
+        "npi_depression_symptom_count",
+        "gds_depression_severity",
         "npi_sleep_item_score",
         "npi_sleep_severity",
-        "npi_depression_symptom_count",
         "npi_sleep_symptom_count",
         "somatic_complaints",
         "hachinski_hypertension_history",

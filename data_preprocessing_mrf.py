@@ -623,7 +623,6 @@ def build_adni_mrf_features_from_wide(
         "renal_dysfunction",
         "heart_disease",
         "depression",
-        "depression_severity",
         "has_antihypertensive_med",
         "has_lipid_med",
         "has_diabetes_med",
