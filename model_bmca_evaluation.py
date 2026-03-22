@@ -157,6 +157,11 @@ def train_bmca_model(
         f"{n_iter} Optuna trials, {n_splits}-fold stratified group CV."
     )
 
+    # Score inner CV folds on primary pairs only so the CV AUC is comparable
+    # to the primary-only test AUC. Augmentation pairs are still used for
+    # training within each fold; only the validation scoring is restricted.
+    val_mask = (train_df["analysis_set"] == "primary").values
+
     study, best_model, inner_splits = train_model(
         X_train=X_train,
         y_train=y_train,
@@ -171,6 +176,7 @@ def train_bmca_model(
         cat_vars=None,
         n_jobs=n_jobs,
         gpu=gpu,
+        val_mask=val_mask,
     )
 
     return study, best_model, inner_splits

@@ -1485,7 +1485,7 @@ def _encode_categoricals(df, model_name):
 def train_model(X_train, y_train, X_test, y_test,
                 model='rf', seed_rf=0, seed_bayes=0, cv=10,
                 n_iter=100, groups=None, cat_vars=None, n_jobs=-1,
-                gpu=False):
+                gpu=False, val_mask=None):
     """
     Perform hyperparameter optimization with Optuna and evaluate on a test fold.
 
@@ -1505,6 +1505,12 @@ def train_model(X_train, y_train, X_test, y_test,
         cat_vars (list[str] or None): Categorical feature names (CatBoost).
         n_jobs (int): Number of parallel Optuna trials. Use ``1`` for\n            CatBoost GPU to avoid OOM. Use ``-1`` for all cores.
         gpu (bool): Enable GPU training for CatBoost.
+        val_mask (np.ndarray or None): Boolean array of length ``len(X_train)``.
+            When provided, validation AUC in each inner CV fold is computed
+            only on rows where ``val_mask`` is ``True`` (e.g. primary pairs),
+            while the model is still trained on all rows in the training fold
+            (primary + augmentation). Falls back to scoring on all validation
+            rows if the masked subset contains fewer than 2 classes.
 
     Returns:
         tuple: ``(study, best_model, inner_splits)``
@@ -1522,6 +1528,17 @@ def train_model(X_train, y_train, X_test, y_test,
         m = create_model(model, seed=seed_rf, cat_vars=cat_vars, gpu=gpu)
         m.set_params(**params)
         m.fit(X_train_enc.iloc[train_idx], y_train_arr[train_idx])
+        if val_mask is not None:
+            primary_in_val = val_mask[val_idx]
+            val_idx_primary = val_idx[primary_in_val]
+            if len(val_idx_primary) >= 2 and len(np.unique(y_train_arr[val_idx_primary])) == 2:
+                y_proba = m.predict_proba(X_train_enc.iloc[val_idx_primary])[:, 1]
+                return roc_auc_score(y_train_arr[val_idx_primary], y_proba)
+            # Fallback: not enough primary pairs in this fold to compute AUC
+            logger.warning(
+                "val_mask: fewer than 2 classes in primary validation subset "
+                f"(n={len(val_idx_primary)}); falling back to full fold scoring."
+            )
         y_proba = m.predict_proba(X_train_enc.iloc[val_idx])[:, 1]
         return roc_auc_score(y_train_arr[val_idx], y_proba)
 
