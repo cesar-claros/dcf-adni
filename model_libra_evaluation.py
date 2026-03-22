@@ -57,6 +57,15 @@ LABEL_COL = "transition_label"
 GROUP_COL = "group"
 SUBJECT_ID_COL = "subject_id"
 
+# Outcome-derived variables that must never be treated as features.
+# Listed here for reference; LIBRA evaluation uses only SCORE_COL so these
+# are not explicitly filtered, but they are noted for consistency.
+_OUTCOME_DERIVED_COLS = {
+    "first_conversion_month",
+    "baseline_diagnosis",
+    "n_followup_visits_ge12_with_diag",
+}
+
 
 # =============================================================================
 # Data helpers

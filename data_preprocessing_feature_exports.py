@@ -121,6 +121,15 @@ def _metadata_columns(subject_id_col: str) -> set[str]:
         "abs_age_gap",
         "split",
         "split_group_source",
+        # Outcome-derived provenance variables — must never be used as model features.
+        # first_conversion_month encodes the month a subject received their first
+        # MCI/dementia diagnosis; it is NaN for stable-CN subjects and non-NaN for
+        # transition subjects, directly reconstructing the label.
+        # baseline_diagnosis and n_followup_visits_ge12_with_diag are cohort-selection
+        # and study-participation variables, not baseline risk factors.
+        "first_conversion_month",
+        "baseline_diagnosis",
+        "n_followup_visits_ge12_with_diag",
     }
 
 

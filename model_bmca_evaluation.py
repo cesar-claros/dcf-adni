@@ -55,11 +55,16 @@ from src.utils_model import train_model
 logging.basicConfig(level=logging.INFO, format="%(name)s — %(message)s")
 logger = logging.getLogger(__name__)
 
-# Columns that are not features
+# Columns that are not features — metadata, cohort provenance, and outcome-derived variables.
+# first_conversion_month directly encodes the label (NaN for stable-CN, non-NaN for
+# transition subjects) and must never enter the feature matrix.
+# baseline_diagnosis and n_followup_visits_ge12_with_diag are cohort-selection and
+# study-participation variables, not baseline risk factors.
 _METADATA_COLS = {
     "subject_id", "pair_id", "group", "transition", "transition_label",
     "matched_cohort", "analysis_set", "evaluation_eligible",
     "abs_age_gap", "split", "split_group_source",
+    "first_conversion_month", "baseline_diagnosis", "n_followup_visits_ge12_with_diag",
 }
 
 LABEL_COL = "transition_label"
