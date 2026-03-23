@@ -427,9 +427,14 @@ def run(
     )
 
     # ----- Evaluate -----
+    # For the vascular model, attach the composite to a copy of bmca_test_df so
+    # _evaluate can select vasc_feat_cols (which includes vascular_composite).
+    bmca_test_df_vasc = bmca_test_df.copy()
+    bmca_test_df_vasc["vascular_composite"] = test_composite
+
     logger.info("\n=== Evaluating on primary test set (n=36 pairs) ===")
-    bmca_result  = _evaluate(bmca_model,  bmca_test_df,  bmca_feat_cols,  "BMCA-only",     n_boot, seed)
-    vasc_result  = _evaluate(vasc_model,  bmca_test_df,  vasc_feat_cols,  "BMCA+vascular", n_boot, seed)
+    bmca_result = _evaluate(bmca_model, bmca_test_df,      bmca_feat_cols, "BMCA-only",     n_boot, seed)
+    vasc_result = _evaluate(vasc_model, bmca_test_df_vasc, vasc_feat_cols, "BMCA+vascular", n_boot, seed)
 
     delta = vasc_result["auc"] - bmca_result["auc"]
     logger.info(f"\nΔ AUC (BMCA+vascular − BMCA-only) = {delta:+.3f}")
