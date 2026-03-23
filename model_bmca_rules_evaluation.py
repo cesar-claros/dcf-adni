@@ -404,9 +404,20 @@ def run(
     ]
     logger.info(f"Rules surviving L1: {len(surviving_rules)}/{len(top_rule_ids)}")
 
-    # Save surviving rule descriptions
+    # Save surviving rule descriptions.
+    # Build surviving_df from metadata_top, falling back to a coef-only table
+    # if the metadata join produces no matches (can happen if rule_id dtype
+    # diverges between the metadata DataFrame and the rule matrix columns).
     surviving_df = metadata_top[metadata_top["rule_id"].isin(surviving_rules)].copy()
+    if surviving_df.empty and surviving_rules:
+        surviving_df = pd.DataFrame({"rule_id": surviving_rules})
     surviving_df["l1_coef"] = surviving_df["rule_id"].map(rule_coefs)
+    # Merge rule text from metadata for any rows missing it
+    if "rule" not in surviving_df.columns or surviving_df["rule"].isna().all():
+        meta_lookup = metadata_df.set_index("rule_id")
+        for col in ["tree", "leaf_node", "rule", "support"]:
+            if col in meta_lookup.columns:
+                surviving_df[col] = surviving_df["rule_id"].map(meta_lookup[col])
     surviving_df = surviving_df.sort_values("l1_coef", key=abs, ascending=False)
     surviving_df.to_csv(f"{output_dir}/bmca_rules_surviving.csv", index=False)
     logger.info(f"Surviving rules saved to {output_dir}/bmca_rules_surviving.csv")
