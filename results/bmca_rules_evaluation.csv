@@ -1,0 +1,3 @@
+model,auc,auc_ci_low_95,auc_ci_high_95,best_inner_cv_auc,n_rules_raw,n_rules_dedup,n_rules_filtered,n_rules_surviving
+bmca_catboost,0.8178,0.7478,0.8803,0.7678,1850,1765,1738,8
+bmca_rules_catboost,0.8064,0.7267,0.8747,0.7709,1850,1765,1738,8
