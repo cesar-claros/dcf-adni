@@ -1,0 +1,2 @@
+comparison,observed_diff,ci_low,ci_high,p_value,n_boot
+BMCA+mrf_aug_score vs BMCA baseline,-0.0119,-0.0397,0.0136,0.8159,10000

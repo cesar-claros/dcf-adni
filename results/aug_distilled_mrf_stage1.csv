@@ -1,0 +1,2 @@
+model,oof_auc,best_cv_auc,param_iterations,param_learning_rate,param_depth,param_l2_leaf_reg,param_bagging_temperature,param_border_count,param_min_data_in_leaf,param_random_strength
+stage1_mrf_on_augmentation,0.7331,0.7428,128,0.01002329484085525,6,23.236139751521854,0.0064609908704551244,194,43,7.828572455873931
