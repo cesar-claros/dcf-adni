@@ -300,6 +300,7 @@ def run(
         n_estimators=_RF_N_ESTIMATORS,
         max_depth=_RF_MAX_DEPTH,
         min_samples_leaf=_RF_MIN_SAMPLES_LEAF,
+        oob_score=True,
         random_state=seed,
         n_jobs=n_jobs,
     )
