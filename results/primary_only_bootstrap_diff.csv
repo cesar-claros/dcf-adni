@@ -1,0 +1,2 @@
+comparison,observed_diff,ci_low_95,ci_high_95,p_value,n_boot
+bmca_mrf_vs_bmca (primary-only trained),-0.0603,-0.1153,-0.0111,0.9915,10000

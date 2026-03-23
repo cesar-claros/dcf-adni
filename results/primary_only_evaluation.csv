@@ -1,0 +1,3 @@
+model,auc,auc_ci_low_95,auc_ci_high_95,best_inner_cv_auc,n_features,n_train_subjects,n_train_pairs,param_iterations,param_learning_rate,param_depth,param_l2_leaf_reg,param_bagging_temperature,param_border_count,param_min_data_in_leaf,param_random_strength
+bmca_primary_only,0.8236,0.7508,0.8861,0.7838,29,238,119,246,0.0010028567464045702,2,0.10524608163913912,0.22609205510278935,109,35,5.0521336066236096
+bmca_mrf_primary_only,0.7633,0.6789,0.8353,0.7845,59,238,119,429,0.003373713666719214,2,0.5884513806493739,0.1543667553712237,37,31,3.941503093814402
