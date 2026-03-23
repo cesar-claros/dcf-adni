@@ -1,0 +1,4 @@
+feature,education_coef,intercept
+cdrsb,-0.033387,1.204768
+logical_memory_delayed,0.567113,0.567459
+mmse_total,0.16697,25.638192

@@ -1,0 +1,3 @@
+comparison,observed_diff,ci_low,ci_high,p_value,n_boot
+cdrsb-adjusted vs baseline,0.0111,-0.0194,0.0394,0.2631,10000
+multi-adjusted vs baseline,0.0011,-0.0206,0.0228,0.4701,10000
