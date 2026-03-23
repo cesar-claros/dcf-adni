@@ -68,7 +68,7 @@ class FeatureExportConfig(CohortMatchConfig):
     write_primary_attached_features: bool = True
     write_combined_attached_features: bool = True
     write_split_ready_features: bool = True
-    primary_test_fraction: float = 0.2
+    primary_test_fraction: float = 0.3
     split_random_state: int = 0
     split_stratify_col: str = "transition_label"
     max_missing_fraction: Optional[float] = 0.7
