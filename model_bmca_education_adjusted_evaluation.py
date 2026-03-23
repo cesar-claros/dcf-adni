@@ -253,7 +253,7 @@ def _train_and_evaluate(
 
     eligible = _evaluation_eligible(test_df)
     X_test = eligible[feature_cols]
-    y_test = eligible[LABEL_COL].values.astype(float)
+    y_test = eligible[LABEL_COL].astype(float)
 
     study, best_model, inner_splits = train_model(
         X_train=X_train,
@@ -273,9 +273,10 @@ def _train_and_evaluate(
     )
 
     groups_test = eligible[GROUP_COL].values
+    y_test_arr = y_test.values
     y_score = best_model.predict_proba(X_test)[:, 1]
-    auc = roc_auc_score(y_test, y_score)
-    ci_low, ci_high = _bootstrap_auc(y_test, y_score, groups_test, n_boot=n_boot, seed=seed)
+    auc = roc_auc_score(y_test_arr, y_score)
+    ci_low, ci_high = _bootstrap_auc(y_test_arr, y_score, groups_test, n_boot=n_boot, seed=seed)
 
     importances = best_model.get_feature_importance()
     imp_df = (
@@ -296,7 +297,7 @@ def _train_and_evaluate(
         "ci_low": ci_low,
         "ci_high": ci_high,
         "inner_cv_auc": study.best_value,
-        "y_true": y_test,
+        "y_true": y_test_arr,
         "y_score": y_score,
         "groups": groups_test,
         "importance": imp_df,
