@@ -1,0 +1,6 @@
+comparison,observed_diff,ci_low,ci_high,p_value,n_boot
+A: CDR-SB edu-adj vs Baseline,-0.0075,-0.0319,0.0158,0.729,10000
+B: BMI-norm biomarkers vs Baseline,0.0025,-0.0214,0.0253,0.4062,10000
+A+B: Combined vs Baseline,-0.0242,-0.0478,-0.0014,0.9807,10000
+C: ADAS-13 vasc-adj vs Baseline,-0.0158,-0.0492,0.0183,0.8148,10000
+A+B+C: Full vs Baseline,-0.0097,-0.0322,0.01,0.812,10000
