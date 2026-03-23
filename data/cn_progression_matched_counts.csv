@@ -1,7 +1,7 @@
 analysis_set,split,matched_cohort,transition,n_subjects,n_groups
 augmentation,train,ci_to_dementia,1,267,267
 augmentation,train,stable_cn_augmentation,0,267,267
-primary,test,stable_cn_matched,0,36,36
-primary,test,transition,1,36,36
-primary,train,stable_cn_matched,0,143,143
-primary,train,transition,1,143,143
+primary,test,stable_cn_matched,0,60,60
+primary,test,transition,1,60,60
+primary,train,stable_cn_matched,0,119,119
+primary,train,transition,1,119,119

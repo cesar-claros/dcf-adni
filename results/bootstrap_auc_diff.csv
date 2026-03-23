@@ -1,3 +1,3 @@
 comparison,model_a,model_b,auc_a,auc_b,observed_diff,bootstrap_mean_diff,ci_low_95,ci_high_95,p_value_one_sided,n_boot
-stacked_vs_bmca,bmca,stacked,0.7762,0.7932,0.017,0.0165,-0.0093,0.0463,0.1221,10000
-bmca_vs_mrf,mrf,bmca,0.6273,0.7762,0.1489,0.1485,-0.027,0.3233,0.0509,10000
+stacked_vs_bmca,bmca,stacked,0.8056,0.8031,-0.0025,-0.0024,-0.0081,0.0022,0.8519,10000
+bmca_vs_mrf,mrf,bmca,0.4822,0.8056,0.3233,0.3227,0.2094,0.4353,0.0,10000
