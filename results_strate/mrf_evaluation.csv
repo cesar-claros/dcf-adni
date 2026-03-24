@@ -1,0 +1,2 @@
+model,auc,auc_ci_low_95,auc_ci_high_95,best_inner_cv_auc,param_iterations,param_learning_rate,param_depth,param_l2_leaf_reg,param_bagging_temperature,param_border_count,param_min_data_in_leaf,param_random_strength
+mrf_catboost,0.6328,0.4531,0.8048,0.5522,114,0.004970631873066577,5,0.018455021856364336,0.1484738927108058,192,5,9.6822986414622
