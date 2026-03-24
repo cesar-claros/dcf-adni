@@ -1,0 +1,4 @@
+model,variant,alpha,auc,auc_ci_low_95,auc_ci_high_95,best_inner_cv_auc,n_features,param_iterations,param_learning_rate,param_depth,param_l2_leaf_reg,param_bagging_temperature,param_border_count,param_min_data_in_leaf,param_random_strength
+Baseline (unweighted),A,0.0,0.8233,0.7436,0.8903,0.7686,29,256,0.03937608236601278,2,0.3307499149456823,0.9215755308834086,212,11,7.7471424062004735
+Variant B: MRF agreement,B,2.0,0.8183,0.7411,0.8906,0.7668,29,422,0.06168021975541497,5,222.39005087390873,0.7350564509472417,32,18,3.075107450235191
+Variant C: Disagreement,C,2.0,0.8356,0.7641,0.9008,0.7701,29,253,0.03552891802224416,7,1.6754145113186576,0.3183746387440823,193,48,8.334190191864447
