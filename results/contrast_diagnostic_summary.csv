@@ -1,0 +1,3 @@
+analysis_set,n_pairs,contrast_oof_auc,n_features_selected_l1,n_features_total,selected_C,max_within_pair_snr,median_within_pair_snr
+Primary (CN→MCI),119,0.4201,30,30,242.0128,0.1853,0.0416
+Augmentation (CI→dementia),267,0.7041,3,30,0.0559,0.4053,0.0691
