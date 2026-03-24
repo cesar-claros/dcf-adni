@@ -5,6 +5,7 @@ outputs/
 .idea/
 .venv/
 plots/
+plots_stratg/
 catboost_info/
 journal.log
 journal.log.lock
