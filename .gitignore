@@ -4,9 +4,6 @@ __pycache___
 outputs/
 .idea/
 .venv/
-plots/
-plots_stratg/
-plots_strate/
 catboost_info/
 journal.log
 journal.log.lock
