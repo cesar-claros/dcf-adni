@@ -1,0 +1,4 @@
+model,auc,auc_ci_low_95,auc_ci_high_95,best_inner_cv_auc,n_features,lambda_aux,param_iterations,param_learning_rate,param_depth,param_l2_leaf_reg,param_bagging_temperature,param_border_count,param_min_data_in_leaf,param_random_strength,param_hidden_dim,param_dropout,param_lr,param_weight_decay,param_lambda_aux
+CatBoost BMCA-only,0.8233,0.7436,0.8903,0.7686,29,,256.0,0.03937608236601278,2.0,0.3307499149456823,0.9215755308834086,212.0,11.0,7.7471424062004735,,,,,
+Neural BMCA-only,0.7494,0.6716,0.825,0.7315,29,0.0,,,,,,,,,32.0,0.07977672493516871,0.00027621809007122777,0.0001433392001551856,
+Neural multi-task,0.7522,0.6617,0.8303,0.7354,29,0.12785919263892323,,,,,,,,,128.0,0.2463656012197679,0.000559965104667203,0.00027927408885404953,0.12785919263892323
