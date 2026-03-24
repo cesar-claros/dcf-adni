@@ -39,7 +39,7 @@ _METADATA_COLS = {
     "abs_age_gap", "split", "split_group_source",
     "first_conversion_month", "baseline_diagnosis", "n_followup_visits_ge12_with_diag",
 }
-LABEL_COL = "transition_label"
+LABEL_COL = "transition"
 GROUP_COL = "group"
 
 
