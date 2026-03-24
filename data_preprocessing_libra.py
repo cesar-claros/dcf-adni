@@ -93,7 +93,9 @@ class LibraConfig:
     )
     fallback_requires_gap_at_most_days: Optional[int] = 365
 
-    # Strategy G labeling flags (see Documentation/transition_labeling_strategies.md)
+    # Labeling strategy flags (see Documentation/transition_labeling_strategies.md)
+    # transition_target: "any_impairment" (default), "dementia_only", or "mci_only"
+    transition_target: str = "any_impairment"
     exclude_reverters: bool = False
     min_consecutive_impaired_visits: int = 1
     min_stable_followup_months: Optional[int] = None
@@ -457,6 +459,17 @@ def build_transition_labels(df: pd.DataFrame, config: Optional[LibraConfig] = No
             label = 0.0
         else:
             label = np.nan
+
+        # --- Strategy E: transition target filter ---
+        # Narrow which diagnosis codes count as a positive transition.
+        if label == 1.0 and config.transition_target != "any_impairment":
+            diags_e = list(follow_nonmissing[config.diagnosis_col].astype(int))
+            if config.transition_target == "dementia_only":
+                if 3 not in diags_e:
+                    label = np.nan  # MCI-only subject excluded
+            elif config.transition_target == "mci_only":
+                if 3 in diags_e:
+                    label = np.nan  # dementia subject excluded
 
         # --- Strategy A: exclude reverters ---
         # A reverter reaches MCI (diagnosis=2) then later returns to CN (diagnosis=1).
