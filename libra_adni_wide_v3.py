@@ -93,6 +93,11 @@ class LibraConfig:
     )
     fallback_requires_gap_at_most_days: Optional[int] = 365
 
+    # Strategy G labeling flags (see Documentation/transition_labeling_strategies.md)
+    exclude_reverters: bool = False
+    min_consecutive_impaired_visits: int = 1
+    min_stable_followup_months: Optional[int] = None
+
     glucose_unit: str = "mg/dL"
     cholesterol_unit: str = "mg/dL"
     creatinine_unit: str = "mg/dL"
@@ -391,6 +396,14 @@ def build_transition_labels(df: pd.DataFrame, config: Optional[LibraConfig] = No
         baseline diagnosis == 1 and all observed follow-up diagnoses through the
         last visit remain 1
     - NaN otherwise
+
+    Optional filters (see Documentation/transition_labeling_strategies.md):
+    - exclude_reverters: if True, subjects who reach MCI then return to CN
+      receive label NaN (subjects reaching dementia are never excluded)
+    - min_consecutive_impaired_visits: require at least k consecutive visits
+      with diagnosis >= 2 for label=1 (default 1, current behavior)
+    - min_stable_followup_months: require stable CN subjects to have at least
+      this many months of follow-up for label=0 (default None, no filter)
     """
     if config is None:
         config = LibraConfig()
@@ -433,6 +446,35 @@ def build_transition_labels(df: pd.DataFrame, config: Optional[LibraConfig] = No
             label = 0.0
         else:
             label = np.nan
+
+        # --- Strategy A: exclude reverters ---
+        if config.exclude_reverters and label == 1.0:
+            diags = list(follow_nonmissing[config.diagnosis_col].astype(int))
+            ever_dementia = 3 in diags
+            if not ever_dementia and 2 in diags:
+                first_mci_idx = diags.index(2)
+                if 1 in diags[first_mci_idx + 1 :]:
+                    label = np.nan
+
+        # --- Strategy B: require confirmed progression ---
+        if config.min_consecutive_impaired_visits > 1 and label == 1.0:
+            diags = list(follow_nonmissing[config.diagnosis_col].astype(int))
+            max_run = 0
+            current_run = 0
+            for d in diags:
+                if d >= 2:
+                    current_run += 1
+                    max_run = max(max_run, current_run)
+                else:
+                    current_run = 0
+            if max_run < config.min_consecutive_impaired_visits:
+                label = np.nan
+
+        # --- Strategy D: minimum follow-up for stable controls ---
+        if config.min_stable_followup_months is not None and label == 0.0:
+            max_followup = float(follow_nonmissing["_visit_months"].max())
+            if max_followup < config.min_stable_followup_months:
+                label = np.nan
 
         first_conversion_month = np.nan
         if len(follow_nonmissing):

@@ -1,0 +1,12 @@
+GENOTYPE,PTGENDER,n_remaining_stable,n_ci_dementia,n_augmentation_matches,n_remaining_stable_unmatched
+2/2,1,1,0,0,1
+2/3,1,24,7,7,17
+2/3,2,26,4,4,22
+2/4,1,2,7,2,0
+2/4,2,4,4,4,0
+3/3,1,94,83,83,11
+3/3,2,148,55,55,93
+3/4,1,28,108,28,0
+3/4,2,68,73,68,0
+4/4,1,2,33,2,0
+4/4,2,9,26,9,0
