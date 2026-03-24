@@ -1,0 +1,2 @@
+contrast_model_oof_auc,n_training_pairs,n_features_selected_l1,n_mrf_features_total,selected_C,max_within_pair_snr,median_within_pair_snr
+0.4399,119,30,30,166.81005372000558,0.1853,0.0416

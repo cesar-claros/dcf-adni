@@ -293,7 +293,7 @@ def train_contrast_model(
 
     for tr_idx, val_idx in kf.split(X_scaled):
         m = LogisticRegressionCV(
-            Cs=10, cv=3, penalty="l1", solver="saga",
+            Cs=100, cv=3, penalty="l1", solver="liblinear",
             scoring="roc_auc", random_state=seed, max_iter=5000,
         )
         m.fit(X_scaled[tr_idx], y[tr_idx])

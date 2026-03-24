@@ -1,0 +1,2 @@
+comparison,observed_diff,ci_low,ci_high,p_value,n_boot
+BMCA+contrast vs BMCA baseline,-0.0239,-0.0658,0.0108,0.9109,10000
