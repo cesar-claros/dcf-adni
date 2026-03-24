@@ -1,0 +1,309 @@
+"""
+Strategy E: Full CV evaluation over all primary pairs.
+
+Instead of a single train/test split (16 test pairs), this script runs
+StratifiedGroupKFold over all 47 primary CN->dementia pairs. Augmentation
+pairs are always included in training. Each primary pair rotates through
+exactly one test fold, yielding out-of-fold (OOF) predictions for all 47
+pairs — tripling the effective test size.
+
+For each feature set (BMCA, MRF, BMCA+MRF), the script:
+1. Runs k-fold outer CV (groups = matched pair IDs).
+2. Within each fold, runs Optuna hyperparameter tuning with an inner CV.
+3. Collects OOF predictions for primary pairs.
+4. Reports OOF AUC with bootstrap 95% CI over all 47 pairs.
+
+Usage::
+
+    python model_strate_cv_evaluation.py --n_iter 50 --n_outer 5 --seed 0 --n_jobs 1
+"""
+
+from __future__ import annotations
+
+import argparse
+import logging
+from pathlib import Path
+
+import numpy as np
+import pandas as pd
+from catboost import CatBoostClassifier
+from sklearn.metrics import roc_auc_score
+from sklearn.model_selection import StratifiedGroupKFold
+
+logging.basicConfig(level=logging.INFO, format="%(name)s — %(message)s")
+logger = logging.getLogger(__name__)
+
+_METADATA_COLS = {
+    "subject_id", "pair_id", "group", "transition", "transition_label",
+    "matched_cohort", "analysis_set", "evaluation_eligible",
+    "abs_age_gap", "split", "split_group_source",
+    "first_conversion_month", "baseline_diagnosis", "n_followup_visits_ge12_with_diag",
+}
+LABEL_COL = "transition_label"
+GROUP_COL = "group"
+
+
+def _feature_cols(df: pd.DataFrame) -> list[str]:
+    return [c for c in df.columns if c not in _METADATA_COLS]
+
+
+def _bootstrap_auc(
+    y_true: np.ndarray,
+    y_score: np.ndarray,
+    groups: np.ndarray,
+    n_boot: int = 2000,
+    seed: int = 0,
+) -> tuple[float, float]:
+    rng = np.random.default_rng(seed)
+    unique_groups = np.unique(groups)
+    boot_aucs = []
+    for _ in range(n_boot):
+        sampled = rng.choice(unique_groups, size=len(unique_groups), replace=True)
+        idx = np.concatenate([np.where(groups == g)[0] for g in sampled])
+        y_b, s_b = y_true[idx], y_score[idx]
+        if len(np.unique(y_b)) < 2:
+            continue
+        boot_aucs.append(roc_auc_score(y_b, s_b))
+    boot_aucs = np.array(boot_aucs)
+    return float(np.percentile(boot_aucs, 2.5)), float(np.percentile(boot_aucs, 97.5))
+
+
+def _load_combined(path: str) -> pd.DataFrame:
+    df = pd.read_csv(path)
+    df[LABEL_COL] = pd.to_numeric(df[LABEL_COL], errors="coerce")
+    df[GROUP_COL] = pd.to_numeric(df[GROUP_COL], errors="coerce")
+    return df
+
+
+def run_cv_for_feature_set(
+    df: pd.DataFrame,
+    feature_cols: list[str],
+    name: str,
+    n_outer: int = 5,
+    n_inner: int = 5,
+    n_iter: int = 50,
+    seed: int = 0,
+    n_jobs: int = 1,
+) -> dict:
+    """Run nested CV: outer folds rotate primary pairs through test, inner folds tune hyperparams."""
+    primary_mask = df["analysis_set"] == "primary"
+    aug_mask = df["analysis_set"] == "augmentation"
+
+    primary_df = df[primary_mask].copy()
+    aug_df = df[aug_mask].copy()
+
+    outer_cv = StratifiedGroupKFold(n_splits=n_outer, shuffle=True, random_state=seed)
+
+    oof_scores = np.full(len(primary_df), np.nan)
+    fold_aucs = []
+    fold_importances = []
+
+    for fold_idx, (train_idx, test_idx) in enumerate(
+        outer_cv.split(primary_df, y=primary_df[LABEL_COL], groups=primary_df[GROUP_COL])
+    ):
+        primary_train = primary_df.iloc[train_idx]
+        primary_test = primary_df.iloc[test_idx]
+
+        # Augmentation always in train
+        fold_train = pd.concat([primary_train, aug_df], ignore_index=True)
+
+        X_train = fold_train[feature_cols]
+        y_train = fold_train[LABEL_COL].astype(float)
+        groups_train = fold_train[GROUP_COL]
+
+        X_test = primary_test[feature_cols]
+        y_test = primary_test[LABEL_COL].astype(float).values
+
+        # Inner CV for hyperparameter tuning via Optuna
+        import optuna
+        optuna.logging.set_verbosity(optuna.logging.WARNING)
+
+        inner_cv = StratifiedGroupKFold(n_splits=n_inner, shuffle=True, random_state=seed + fold_idx)
+        # Only score on primary validation subjects within inner CV
+        inner_primary_mask = (fold_train["analysis_set"] == "primary").values
+
+        def objective(trial):
+            params = {
+                "iterations": trial.suggest_int("iterations", 50, 1000),
+                "learning_rate": trial.suggest_float("learning_rate", 0.001, 0.3, log=True),
+                "depth": trial.suggest_int("depth", 3, 8),
+                "l2_leaf_reg": trial.suggest_float("l2_leaf_reg", 1e-3, 100, log=True),
+                "bagging_temperature": trial.suggest_float("bagging_temperature", 0.0, 1.0),
+                "border_count": trial.suggest_int("border_count", 32, 255),
+                "min_data_in_leaf": trial.suggest_int("min_data_in_leaf", 1, 50),
+                "random_strength": trial.suggest_float("random_strength", 0.0, 10.0),
+                "random_seed": seed,
+                "verbose": 0,
+                "allow_writing_files": False,
+                "nan_mode": "Min",
+            }
+
+            inner_aucs = []
+            for inner_train_idx, inner_val_idx in inner_cv.split(
+                X_train, y=y_train, groups=groups_train
+            ):
+                X_it, y_it = X_train.iloc[inner_train_idx], y_train.iloc[inner_train_idx]
+                X_iv, y_iv = X_train.iloc[inner_val_idx], y_train.iloc[inner_val_idx]
+
+                # Only score on primary validation subjects
+                val_primary = inner_primary_mask[inner_val_idx]
+                if val_primary.sum() == 0 or len(np.unique(y_iv.values[val_primary])) < 2:
+                    continue
+
+                model = CatBoostClassifier(**params)
+                model.fit(X_it, y_it, verbose=0)
+                preds = model.predict_proba(X_iv)[:, 1]
+                inner_aucs.append(roc_auc_score(y_iv.values[val_primary], preds[val_primary]))
+
+            return np.mean(inner_aucs) if inner_aucs else 0.5
+
+        study = optuna.create_study(direction="maximize", sampler=optuna.samplers.TPESampler(seed=seed))
+        study.optimize(objective, n_trials=n_iter, n_jobs=n_jobs, show_progress_bar=False)
+
+        best_params = study.best_params
+        best_params.update({"random_seed": seed, "verbose": 0, "allow_writing_files": False, "nan_mode": "Min"})
+        final_model = CatBoostClassifier(**best_params)
+        final_model.fit(X_train, y_train, verbose=0)
+
+        fold_preds = final_model.predict_proba(X_test)[:, 1]
+        oof_scores[test_idx] = fold_preds
+
+        if len(np.unique(y_test)) >= 2:
+            fold_auc = roc_auc_score(y_test, fold_preds)
+            fold_aucs.append(fold_auc)
+
+        imp = final_model.get_feature_importance()
+        fold_importances.append(pd.Series(imp, index=feature_cols))
+
+        n_test_pairs = primary_test[GROUP_COL].nunique()
+        logger.info(
+            f"  [{name}] Fold {fold_idx+1}/{n_outer}: "
+            f"test pairs={n_test_pairs}, "
+            f"fold AUC={fold_auc:.3f}, "
+            f"best inner CV={study.best_value:.3f}"
+        )
+
+    # OOF AUC over all primary pairs
+    y_all = primary_df[LABEL_COL].astype(float).values
+    groups_all = primary_df[GROUP_COL].values
+    oof_auc = roc_auc_score(y_all, oof_scores)
+    ci_low, ci_high = _bootstrap_auc(y_all, oof_scores, groups_all, n_boot=2000, seed=seed)
+
+    # Average feature importance
+    avg_importance = pd.concat(fold_importances, axis=1).mean(axis=1)
+    importance_df = (
+        pd.DataFrame({"feature": feature_cols, "importance": avg_importance})
+        .sort_values("importance", ascending=False)
+        .reset_index(drop=True)
+    )
+
+    logger.info(
+        f"  [{name}] OOF AUC = {oof_auc:.3f}  95% CI [{ci_low:.3f}, {ci_high:.3f}]  "
+        f"(n={len(primary_df)//2} pairs)"
+    )
+
+    return {
+        "name": name,
+        "oof_auc": oof_auc,
+        "ci_low": ci_low,
+        "ci_high": ci_high,
+        "fold_aucs": fold_aucs,
+        "importance_df": importance_df,
+        "oof_scores": oof_scores,
+        "y_true": y_all,
+        "groups": groups_all,
+    }
+
+
+def run(
+    bmca_path: str = "data/adni_bmca_features_strate_combined_matched.csv",
+    mrf_path: str = "data/adni_mrf_features_strate_combined_matched.csv",
+    output_dir: str = "results_strate_cv",
+    n_outer: int = 5,
+    n_inner: int = 5,
+    n_iter: int = 50,
+    seed: int = 0,
+    n_jobs: int = 1,
+) -> dict:
+    Path(output_dir).mkdir(parents=True, exist_ok=True)
+
+    bmca_df = _load_combined(bmca_path)
+    mrf_df = _load_combined(mrf_path)
+
+    bmca_features = _feature_cols(bmca_df)
+    mrf_features = _feature_cols(mrf_df)
+
+    # Build BMCA+MRF by merging on metadata
+    meta_cols = [c for c in bmca_df.columns if c in _METADATA_COLS]
+    bmca_mrf_df = bmca_df.merge(
+        mrf_df.drop(columns=[c for c in meta_cols if c != "subject_id"], errors="ignore"),
+        on="subject_id",
+        how="inner",
+        suffixes=("", "_mrf_dup"),
+    )
+    # Drop any duplicate columns from merge
+    bmca_mrf_df = bmca_mrf_df[[c for c in bmca_mrf_df.columns if not c.endswith("_mrf_dup")]]
+    bmca_mrf_features = _feature_cols(bmca_mrf_df)
+
+    logger.info(
+        f"Strategy E full CV: {bmca_df[bmca_df['analysis_set']=='primary'][GROUP_COL].nunique()} "
+        f"primary pairs, {n_outer}-fold outer CV, {n_iter} Optuna trials per fold."
+    )
+
+    results = {}
+    for name, df, feats in [
+        ("BMCA", bmca_df, bmca_features),
+        ("MRF", mrf_df, mrf_features),
+        ("BMCA+MRF", bmca_mrf_df, bmca_mrf_features),
+    ]:
+        logger.info(f"\n{'='*60}\n{name} ({len(feats)} features)\n{'='*60}")
+        r = run_cv_for_feature_set(
+            df, feats, name,
+            n_outer=n_outer, n_inner=n_inner, n_iter=n_iter,
+            seed=seed, n_jobs=n_jobs,
+        )
+        results[name] = r
+
+        r["importance_df"].to_csv(f"{output_dir}/{name.lower().replace('+','_')}_importance.csv", index=False)
+
+    # Summary table
+    summary_rows = []
+    for name, r in results.items():
+        summary_rows.append({
+            "model": name,
+            "oof_auc": round(r["oof_auc"], 4),
+            "ci_low_95": round(r["ci_low"], 4),
+            "ci_high_95": round(r["ci_high"], 4),
+            "fold_aucs": str([round(a, 3) for a in r["fold_aucs"]]),
+        })
+    summary_df = pd.DataFrame(summary_rows)
+    summary_df.to_csv(f"{output_dir}/strate_cv_summary.csv", index=False)
+
+    logger.info(f"\n{'='*60}\nSummary\n{'='*60}")
+    logger.info(f"\n{summary_df.to_string(index=False)}")
+
+    return results
+
+
+if __name__ == "__main__":
+    parser = argparse.ArgumentParser(description="Strategy E full CV evaluation")
+    parser.add_argument("--bmca", default="data/adni_bmca_features_strate_combined_matched.csv")
+    parser.add_argument("--mrf", default="data/adni_mrf_features_strate_combined_matched.csv")
+    parser.add_argument("--output_dir", default="results_strate_cv")
+    parser.add_argument("--n_outer", type=int, default=5)
+    parser.add_argument("--n_inner", type=int, default=5)
+    parser.add_argument("--n_iter", type=int, default=50)
+    parser.add_argument("--seed", type=int, default=0)
+    parser.add_argument("--n_jobs", type=int, default=1)
+    args = parser.parse_args()
+
+    run(
+        bmca_path=args.bmca,
+        mrf_path=args.mrf,
+        output_dir=args.output_dir,
+        n_outer=args.n_outer,
+        n_inner=args.n_inner,
+        n_iter=args.n_iter,
+        seed=args.seed,
+        n_jobs=args.n_jobs,
+    )
