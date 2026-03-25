@@ -43,8 +43,13 @@ LABEL_COL = "transition"
 GROUP_COL = "group"
 
 
-def _feature_cols(df: pd.DataFrame) -> list[str]:
-    return [c for c in df.columns if c not in _METADATA_COLS]
+def _feature_cols(df: pd.DataFrame, audit_path: str | None = None) -> list[str]:
+    all_feats = [c for c in df.columns if c not in _METADATA_COLS]
+    if audit_path is None:
+        return all_feats
+    audit = pd.read_csv(audit_path)
+    keep = set(audit.loc[audit["keep_for_modeling"] == 1, "column"])
+    return [c for c in all_feats if c in keep]
 
 
 def _bootstrap_auc(
@@ -260,14 +265,16 @@ def run(
     n_iter: int = 50,
     seed: int = 0,
     n_jobs: int = 1,
+    bmca_audit: str | None = None,
+    mrf_audit: str | None = None,
 ) -> dict:
     Path(output_dir).mkdir(parents=True, exist_ok=True)
 
     bmca_df = _load_combined(bmca_path)
     mrf_df = _load_combined(mrf_path)
 
-    bmca_features = _feature_cols(bmca_df)
-    mrf_features = _feature_cols(mrf_df)
+    bmca_features = _feature_cols(bmca_df, bmca_audit)
+    mrf_features = _feature_cols(mrf_df, mrf_audit)
 
     # Build BMCA+MRF by merging on metadata
     meta_cols = [c for c in bmca_df.columns if c in _METADATA_COLS]
@@ -368,6 +375,8 @@ if __name__ == "__main__":
     parser.add_argument("--n_iter", type=int, default=50)
     parser.add_argument("--seed", type=int, default=0)
     parser.add_argument("--n_jobs", type=int, default=1)
+    parser.add_argument("--bmca_audit", default=None, help="BMCA column audit CSV; only keep_for_modeling=1 features used")
+    parser.add_argument("--mrf_audit", default=None, help="MRF column audit CSV; only keep_for_modeling=1 features used")
     args = parser.parse_args()
 
     run(
@@ -379,4 +388,6 @@ if __name__ == "__main__":
         n_iter=args.n_iter,
         seed=args.seed,
         n_jobs=args.n_jobs,
+        bmca_audit=args.bmca_audit,
+        mrf_audit=args.mrf_audit,
     )
