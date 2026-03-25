@@ -1,0 +1,3 @@
+comparison,observed_diff,ci_low_95,ci_high_95,p_value,n_boot
+BMCA+MRF vs BMCA,-0.0323,-0.0779,0.015,0.9088,10000
+MRF vs BMCA,-0.2313,-0.3277,-0.1324,1.0,10000
