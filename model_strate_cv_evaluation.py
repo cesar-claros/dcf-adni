@@ -286,7 +286,7 @@ def run(
     )
     # Drop any duplicate columns from merge
     bmca_mrf_df = bmca_mrf_df[[c for c in bmca_mrf_df.columns if not c.endswith("_mrf_dup")]]
-    bmca_mrf_features = _feature_cols(bmca_mrf_df)
+    bmca_mrf_features = sorted(set(bmca_features) | set(mrf_features))
 
     logger.info(
         f"Strategy E full CV: {bmca_df[bmca_df['analysis_set']=='primary'][GROUP_COL].nunique()} "
