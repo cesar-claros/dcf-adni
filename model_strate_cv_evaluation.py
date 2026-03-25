@@ -68,6 +68,42 @@ def _bootstrap_auc(
     return float(np.percentile(boot_aucs, 2.5)), float(np.percentile(boot_aucs, 97.5))
 
 
+def _bootstrap_paired_auc_diff(
+    y_true: np.ndarray,
+    scores_a: np.ndarray,
+    scores_b: np.ndarray,
+    groups: np.ndarray,
+    n_boot: int = 10000,
+    seed: int = 0,
+) -> dict:
+    """Paired bootstrap test for AUC(A) - AUC(B), resampling at group level."""
+    rng = np.random.default_rng(seed)
+    unique_groups = np.unique(groups)
+    observed_diff = roc_auc_score(y_true, scores_a) - roc_auc_score(y_true, scores_b)
+
+    boot_diffs = []
+    for _ in range(n_boot):
+        sampled = rng.choice(unique_groups, size=len(unique_groups), replace=True)
+        idx = np.concatenate([np.where(groups == g)[0] for g in sampled])
+        y_b = y_true[idx]
+        if len(np.unique(y_b)) < 2:
+            continue
+        auc_a = roc_auc_score(y_b, scores_a[idx])
+        auc_b = roc_auc_score(y_b, scores_b[idx])
+        boot_diffs.append(auc_a - auc_b)
+
+    boot_diffs = np.array(boot_diffs)
+    p_value = float(np.mean(boot_diffs <= 0))
+
+    return {
+        "observed_diff": observed_diff,
+        "ci_low": float(np.percentile(boot_diffs, 2.5)),
+        "ci_high": float(np.percentile(boot_diffs, 97.5)),
+        "p_value": p_value,
+        "n_boot": len(boot_diffs),
+    }
+
+
 def _load_combined(path: str) -> pd.DataFrame:
     df = pd.read_csv(path)
     df[LABEL_COL] = pd.to_numeric(df[LABEL_COL], errors="coerce")
@@ -266,6 +302,12 @@ def run(
 
         r["importance_df"].to_csv(f"{output_dir}/{name.lower().replace('+','_')}_importance.csv", index=False)
 
+    # Save OOF predictions
+    oof_df = pd.DataFrame({"group": results["BMCA"]["groups"], "y_true": results["BMCA"]["y_true"]})
+    for name, r in results.items():
+        oof_df[f"oof_{name.lower().replace('+','_')}"] = r["oof_scores"]
+    oof_df.to_csv(f"{output_dir}/oof_predictions.csv", index=False)
+
     # Summary table
     summary_rows = []
     for name, r in results.items():
@@ -281,6 +323,37 @@ def run(
 
     logger.info(f"\n{'='*60}\nSummary\n{'='*60}")
     logger.info(f"\n{summary_df.to_string(index=False)}")
+
+    # Paired bootstrap AUC difference tests
+    y_true = results["BMCA"]["y_true"]
+    groups = results["BMCA"]["groups"]
+    comparisons = [
+        ("BMCA+MRF", "BMCA"),
+        ("MRF", "BMCA"),
+    ]
+    bootstrap_rows = []
+    for name_a, name_b in comparisons:
+        if name_a in results and name_b in results:
+            bt = _bootstrap_paired_auc_diff(
+                y_true, results[name_a]["oof_scores"], results[name_b]["oof_scores"],
+                groups, n_boot=10000, seed=seed,
+            )
+            bootstrap_rows.append({
+                "comparison": f"{name_a} vs {name_b}",
+                "observed_diff": round(bt["observed_diff"], 4),
+                "ci_low_95": round(bt["ci_low"], 4),
+                "ci_high_95": round(bt["ci_high"], 4),
+                "p_value": round(bt["p_value"], 4),
+                "n_boot": bt["n_boot"],
+            })
+            logger.info(
+                f"  {name_a} vs {name_b}: Δ = {bt['observed_diff']:+.4f}  "
+                f"95% CI [{bt['ci_low']:+.4f}, {bt['ci_high']:+.4f}]  "
+                f"p(Δ≤0) = {bt['p_value']:.4f}"
+            )
+    if bootstrap_rows:
+        bt_df = pd.DataFrame(bootstrap_rows)
+        bt_df.to_csv(f"{output_dir}/bootstrap_paired_diff.csv", index=False)
 
     return results
 
