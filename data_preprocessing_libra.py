@@ -96,7 +96,8 @@ class LibraConfig:
     # Labeling strategy flags (see Documentation/transition_labeling_strategies.md)
     # transition_target: "any_impairment" (default), "dementia_only", or "mci_only"
     transition_target: str = "any_impairment"
-    exclude_reverters: bool = False
+    exclude_mci_reverters: bool = False
+    exclude_dementia_reverters: bool = False
     min_consecutive_impaired_visits: int = 1
     min_stable_followup_months: Optional[int] = None
 
@@ -411,8 +412,10 @@ def build_transition_labels(df: pd.DataFrame, config: Optional[LibraConfig] = No
     - NaN otherwise
 
     Optional filters (see Documentation/transition_labeling_strategies.md):
-    - exclude_reverters: if True, subjects who reach MCI then return to CN
-      receive label NaN (subjects reaching dementia are never excluded)
+    - exclude_mci_reverters: if True, subjects who reach MCI then return to CN
+      (without ever reaching dementia) receive label NaN
+    - exclude_dementia_reverters: if True, subjects who reach dementia then
+      return to MCI or CN receive label NaN
     - min_consecutive_impaired_visits: require at least k consecutive visits
       with diagnosis >= 2 for label=1 (default 1, current behavior)
     - min_stable_followup_months: require stable CN subjects to have at least
@@ -472,14 +475,23 @@ def build_transition_labels(df: pd.DataFrame, config: Optional[LibraConfig] = No
                     label = np.nan  # dementia subject excluded
 
         # --- Strategy A: exclude reverters ---
-        # A reverter reaches MCI (diagnosis=2) then later returns to CN (diagnosis=1).
-        # Subjects who reach dementia (diagnosis=3) are never classified as reverters.
-        if config.exclude_reverters and label == 1.0:
+        # MCI reverters: reach MCI (diagnosis=2) then later return to CN (diagnosis=1),
+        # without ever reaching dementia.
+        # Dementia reverters: reach dementia (diagnosis=3) then later return to
+        # CN (diagnosis=1) or MCI (diagnosis=2).
+        if (config.exclude_mci_reverters or config.exclude_dementia_reverters) and label == 1.0:
             diags = list(follow_nonmissing[config.diagnosis_col].astype(int))
             ever_dementia = 3 in diags
-            if not ever_dementia and 2 in diags:
+
+            if config.exclude_mci_reverters and not ever_dementia and 2 in diags:
                 first_mci_idx = diags.index(2)
                 if 1 in diags[first_mci_idx + 1 :]:
+                    label = np.nan
+
+            if config.exclude_dementia_reverters and ever_dementia and label == 1.0:
+                first_dem_idx = diags.index(3)
+                after_dem = diags[first_dem_idx + 1 :]
+                if 1 in after_dem or 2 in after_dem:
                     label = np.nan
 
         # --- Strategy B: require confirmed progression ---
