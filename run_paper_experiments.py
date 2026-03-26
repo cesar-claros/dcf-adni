@@ -10,6 +10,8 @@ Usage::
     python run_paper_experiments.py --block training --strategy L4
     python run_paper_experiments.py --block transfer --strategy L4
     python run_paper_experiments.py --block bmca_comparison --strategy L4
+    python run_paper_experiments.py --block stacking --strategy L4
+    python run_paper_experiments.py --block contrast --strategy L4
     python run_paper_experiments.py --block summary
 
     # Run everything (labeling uses seed 0; training/transfer use seeds 0-4)
@@ -190,8 +192,59 @@ def run_bmca_comparison(
     )
 
 
+def run_stacking(
+    strategy: str = "L4",
+    seeds: list[int] | None = None,
+) -> None:
+    """Block 4: Score stacking on OOF predictions from Block 2 combined runs."""
+    from analysis_score_stacking import run as run_stack
+
+    if seeds is None:
+        seeds = SEEDS
+
+    oof_dirs = []
+    for seed in seeds:
+        d = f"{RESULTS_BASE}/training/combined_seed{seed}"
+        if Path(d).exists():
+            oof_dirs.append(d)
+        else:
+            logger.warning(f"Skipping stacking for seed {seed}: {d} not found. Run --block training first.")
+
+    if oof_dirs:
+        logger.info(f"\n{'#'*60}")
+        logger.info(f"# Block 4: Score stacking ({len(oof_dirs)} seeds)")
+        logger.info(f"{'#'*60}")
+        run_stack(oof_dirs=oof_dirs, output_dir=f"{RESULTS_BASE}/stacking")
+
+
+def run_contrast(
+    strategy: str = "L4",
+    seed: int = 0,
+) -> None:
+    """Block 5: Within-pair contrast diagnostics."""
+    from analysis_within_pair_contrast import run as run_ctr
+
+    paths = _data_paths(strategy)
+    audit_mrf = paths["mrf_audit"] if Path(paths["mrf_audit"]).exists() else None
+
+    if not Path(paths["mrf"]).exists():
+        logger.warning(f"MRF data not found: {paths['mrf']}. Run preprocessing first.")
+        return
+
+    logger.info(f"\n{'#'*60}")
+    logger.info(f"# Block 5: Within-pair contrast diagnostics")
+    logger.info(f"{'#'*60}")
+
+    run_ctr(
+        mrf_path=paths["mrf"],
+        output_dir=f"{RESULTS_BASE}/contrast",
+        mrf_audit=audit_mrf,
+        seed=seed,
+    )
+
+
 def collect_summary() -> None:
-    """Block 4: Collect results into summary tables."""
+    """Block 7: Collect results into summary tables."""
     results_dir = Path(RESULTS_BASE)
     summary_dir = results_dir / "summary"
     summary_dir.mkdir(parents=True, exist_ok=True)
@@ -284,13 +337,25 @@ def collect_summary() -> None:
         comp = pd.read_csv(comp_file)
         logger.info(f"\nBMCA comparison:\n{comp.to_string(index=False)}")
 
+    # --- Score stacking ---
+    stack_file = results_dir / "stacking" / "stacking_aggregated.csv"
+    if stack_file.exists():
+        stack = pd.read_csv(stack_file)
+        logger.info(f"\nScore stacking:\n{stack.to_string(index=False)}")
+
+    # --- Within-pair contrast ---
+    contrast_file = results_dir / "contrast" / "contrast_comparison.csv"
+    if contrast_file.exists():
+        contrast = pd.read_csv(contrast_file)
+        logger.info(f"\nWithin-pair contrast:\n{contrast.to_string(index=False)}")
+
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="Paper experiments orchestrator")
     parser.add_argument(
         "--block",
         required=True,
-        choices=["labeling", "training", "transfer", "bmca_comparison", "summary", "all"],
+        choices=["labeling", "training", "transfer", "bmca_comparison", "stacking", "contrast", "summary", "all"],
     )
     parser.add_argument("--strategy", default="L4", help="Strategy for training/transfer/bmca blocks")
     parser.add_argument("--n_iter", type=int, default=50)
@@ -322,6 +387,12 @@ if __name__ == "__main__":
         run_bmca_comparison(
             strategy=args.strategy, n_iter=args.n_iter, n_jobs=args.n_jobs, seed=args.seed
         )
+
+    if args.block in ("stacking", "all"):
+        run_stacking(strategy=args.strategy, seeds=seed_list)
+
+    if args.block in ("contrast", "all"):
+        run_contrast(strategy=args.strategy, seed=args.seed)
 
     if args.block in ("summary", "all"):
         collect_summary()

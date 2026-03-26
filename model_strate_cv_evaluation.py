@@ -331,6 +331,41 @@ def run(
 
         r["importance_df"].to_csv(f"{output_dir}/{name.lower().replace('+','_')}_importance.csv", index=False)
 
+    # LIBRA raw-score baseline (no model — just AUC of pre-computed score)
+    _LIBRA_COL = "libra_supported_rescaled_0_100"
+    y_cv = results["BMCA"]["y_true"]
+    groups_cv = results["BMCA"]["groups"]
+    if _LIBRA_COL in mrf_df.columns:
+        if training_mode == "augmentation_only":
+            libra_pop = mrf_df[mrf_df["analysis_set"] == "augmentation"]
+        else:
+            libra_pop = mrf_df[mrf_df["analysis_set"] == "primary"]
+        libra_scores = libra_pop[_LIBRA_COL].values
+        libra_valid = ~np.isnan(libra_scores) & ~np.isnan(y_cv)
+        if libra_valid.sum() > 0 and len(np.unique(y_cv[libra_valid])) >= 2:
+            libra_auc = roc_auc_score(y_cv[libra_valid], libra_scores[libra_valid])
+            libra_ci_low, libra_ci_high = _bootstrap_auc(
+                y_cv[libra_valid], libra_scores[libra_valid],
+                groups_cv[libra_valid], n_boot=2000, seed=seed,
+            )
+            results["LIBRA"] = {
+                "name": "LIBRA",
+                "oof_auc": libra_auc,
+                "ci_low": libra_ci_low,
+                "ci_high": libra_ci_high,
+                "fold_aucs": [],
+                "importance_df": pd.DataFrame(
+                    {"feature": [_LIBRA_COL], "importance": [100.0]}
+                ),
+                "oof_scores": libra_scores,
+                "y_true": y_cv,
+                "groups": groups_cv,
+            }
+            logger.info(
+                f"  [LIBRA] Raw-score AUC = {libra_auc:.3f}  "
+                f"95% CI [{libra_ci_low:.3f}, {libra_ci_high:.3f}]"
+            )
+
     # Save OOF predictions
     oof_df = pd.DataFrame({"group": results["BMCA"]["groups"], "y_true": results["BMCA"]["y_true"]})
     for name, r in results.items():
@@ -359,6 +394,7 @@ def run(
     comparisons = [
         ("BMCA+MRF", "BMCA"),
         ("MRF", "BMCA"),
+        ("LIBRA", "BMCA"),
     ]
     bootstrap_rows = []
     for name_a, name_b in comparisons:
