@@ -125,43 +125,58 @@ def run_cv_for_feature_set(
     n_iter: int = 50,
     seed: int = 0,
     n_jobs: int = 1,
+    training_mode: str = "combined",
 ) -> dict:
-    """Run nested CV: outer folds rotate primary pairs through test, inner folds tune hyperparams."""
-    primary_mask = df["analysis_set"] == "primary"
-    aug_mask = df["analysis_set"] == "augmentation"
+    """Run nested CV: outer folds rotate pairs through test, inner folds tune hyperparams.
 
-    primary_df = df[primary_mask].copy()
-    aug_df = df[aug_mask].copy()
+    training_mode controls which subjects participate:
+      - "combined": primary pairs rotate through test; augmentation always in training.
+      - "primary_only": only primary pairs used; no augmentation.
+      - "augmentation_only": only augmentation pairs used (CV within augmentation).
+    """
+    if training_mode == "augmentation_only":
+        cv_df = df[df["analysis_set"] == "augmentation"].copy()
+        extra_train_df = pd.DataFrame(columns=df.columns)
+    else:
+        cv_df = df[df["analysis_set"] == "primary"].copy()
+        if training_mode == "combined":
+            extra_train_df = df[df["analysis_set"] == "augmentation"].copy()
+        else:  # primary_only
+            extra_train_df = pd.DataFrame(columns=df.columns)
 
     outer_cv = StratifiedGroupKFold(n_splits=n_outer, shuffle=True, random_state=seed)
 
-    oof_scores = np.full(len(primary_df), np.nan)
+    oof_scores = np.full(len(cv_df), np.nan)
     fold_aucs = []
     fold_importances = []
 
     for fold_idx, (train_idx, test_idx) in enumerate(
-        outer_cv.split(primary_df, y=primary_df[LABEL_COL], groups=primary_df[GROUP_COL])
+        outer_cv.split(cv_df, y=cv_df[LABEL_COL], groups=cv_df[GROUP_COL])
     ):
-        primary_train = primary_df.iloc[train_idx]
-        primary_test = primary_df.iloc[test_idx]
+        cv_train = cv_df.iloc[train_idx]
+        cv_test = cv_df.iloc[test_idx]
 
-        # Augmentation always in train
-        fold_train = pd.concat([primary_train, aug_df], ignore_index=True)
+        # Extra training data (augmentation for combined mode, empty otherwise)
+        fold_train = pd.concat([cv_train, extra_train_df], ignore_index=True)
 
         X_train = fold_train[feature_cols]
         y_train = fold_train[LABEL_COL].astype(float)
         groups_train = fold_train[GROUP_COL]
 
-        X_test = primary_test[feature_cols]
-        y_test = primary_test[LABEL_COL].astype(float).values
+        X_test = cv_test[feature_cols]
+        y_test = cv_test[LABEL_COL].astype(float).values
 
         # Inner CV for hyperparameter tuning via Optuna
         import optuna
         optuna.logging.set_verbosity(optuna.logging.WARNING)
 
         inner_cv = StratifiedGroupKFold(n_splits=n_inner, shuffle=True, random_state=seed + fold_idx)
-        # Only score on primary validation subjects within inner CV
-        inner_primary_mask = (fold_train["analysis_set"] == "primary").values
+        # In combined mode, only score on primary validation subjects within inner CV.
+        # In primary_only/augmentation_only mode, score on all validation subjects.
+        if training_mode == "combined":
+            inner_scoring_mask = (fold_train["analysis_set"] == "primary").values
+        else:
+            inner_scoring_mask = np.ones(len(fold_train), dtype=bool)
 
         def objective(trial):
             params = {
@@ -187,14 +202,14 @@ def run_cv_for_feature_set(
                 X_iv, y_iv = X_train.iloc[inner_val_idx], y_train.iloc[inner_val_idx]
 
                 # Only score on primary validation subjects
-                val_primary = inner_primary_mask[inner_val_idx]
-                if val_primary.sum() == 0 or len(np.unique(y_iv.values[val_primary])) < 2:
+                val_scoring = inner_scoring_mask[inner_val_idx]
+                if val_scoring.sum() == 0 or len(np.unique(y_iv.values[val_scoring])) < 2:
                     continue
 
                 model = CatBoostClassifier(**params)
                 model.fit(X_it, y_it, verbose=0)
                 preds = model.predict_proba(X_iv)[:, 1]
-                inner_aucs.append(roc_auc_score(y_iv.values[val_primary], preds[val_primary]))
+                inner_aucs.append(roc_auc_score(y_iv.values[val_scoring], preds[val_scoring]))
 
             return np.mean(inner_aucs) if inner_aucs else 0.5
 
@@ -216,7 +231,7 @@ def run_cv_for_feature_set(
         imp = final_model.get_feature_importance()
         fold_importances.append(pd.Series(imp, index=feature_cols))
 
-        n_test_pairs = primary_test[GROUP_COL].nunique()
+        n_test_pairs = cv_test[GROUP_COL].nunique()
         logger.info(
             f"  [{name}] Fold {fold_idx+1}/{n_outer}: "
             f"test pairs={n_test_pairs}, "
@@ -224,9 +239,9 @@ def run_cv_for_feature_set(
             f"best inner CV={study.best_value:.3f}"
         )
 
-    # OOF AUC over all primary pairs
-    y_all = primary_df[LABEL_COL].astype(float).values
-    groups_all = primary_df[GROUP_COL].values
+    # OOF AUC over all CV pairs
+    y_all = cv_df[LABEL_COL].astype(float).values
+    groups_all = cv_df[GROUP_COL].values
     oof_auc = roc_auc_score(y_all, oof_scores)
     ci_low, ci_high = _bootstrap_auc(y_all, oof_scores, groups_all, n_boot=2000, seed=seed)
 
@@ -240,7 +255,7 @@ def run_cv_for_feature_set(
 
     logger.info(
         f"  [{name}] OOF AUC = {oof_auc:.3f}  95% CI [{ci_low:.3f}, {ci_high:.3f}]  "
-        f"(n={len(primary_df)//2} pairs)"
+        f"(n={len(cv_df)//2} pairs, mode={training_mode})"
     )
 
     return {
@@ -267,6 +282,7 @@ def run(
     n_jobs: int = 1,
     bmca_audit: str | None = None,
     mrf_audit: str | None = None,
+    training_mode: str = "combined",
 ) -> dict:
     Path(output_dir).mkdir(parents=True, exist_ok=True)
 
@@ -288,9 +304,15 @@ def run(
     bmca_mrf_df = bmca_mrf_df[[c for c in bmca_mrf_df.columns if not c.endswith("_mrf_dup")]]
     bmca_mrf_features = sorted(set(bmca_features) | set(mrf_features))
 
+    if training_mode == "augmentation_only":
+        n_cv_pairs = bmca_df[bmca_df["analysis_set"] == "augmentation"][GROUP_COL].nunique()
+        pop_label = "augmentation"
+    else:
+        n_cv_pairs = bmca_df[bmca_df["analysis_set"] == "primary"][GROUP_COL].nunique()
+        pop_label = "primary"
     logger.info(
-        f"Strategy E full CV: {bmca_df[bmca_df['analysis_set']=='primary'][GROUP_COL].nunique()} "
-        f"primary pairs, {n_outer}-fold outer CV, {n_iter} Optuna trials per fold."
+        f"Full CV ({training_mode}): {n_cv_pairs} {pop_label} pairs, "
+        f"{n_outer}-fold outer CV, {n_iter} Optuna trials per fold."
     )
 
     results = {}
@@ -303,7 +325,7 @@ def run(
         r = run_cv_for_feature_set(
             df, feats, name,
             n_outer=n_outer, n_inner=n_inner, n_iter=n_iter,
-            seed=seed, n_jobs=n_jobs,
+            seed=seed, n_jobs=n_jobs, training_mode=training_mode,
         )
         results[name] = r
 
@@ -377,6 +399,11 @@ if __name__ == "__main__":
     parser.add_argument("--n_jobs", type=int, default=1)
     parser.add_argument("--bmca_audit", default=None, help="BMCA column audit CSV; only keep_for_modeling=1 features used")
     parser.add_argument("--mrf_audit", default=None, help="MRF column audit CSV; only keep_for_modeling=1 features used")
+    parser.add_argument(
+        "--training_mode", default="combined",
+        choices=["combined", "primary_only", "augmentation_only"],
+        help="Which subjects to use: combined (primary+aug), primary_only, or augmentation_only",
+    )
     args = parser.parse_args()
 
     run(
@@ -390,4 +417,5 @@ if __name__ == "__main__":
         n_jobs=args.n_jobs,
         bmca_audit=args.bmca_audit,
         mrf_audit=args.mrf_audit,
+        training_mode=args.training_mode,
     )
