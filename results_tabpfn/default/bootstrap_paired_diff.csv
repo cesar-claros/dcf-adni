@@ -1,0 +1,4 @@
+cohort,comparison,observed_diff,ci_low_95,ci_high_95,p_value,n_boot
+default,BMCA+MRF vs BMCA,-0.0029,-0.0137,0.0081,0.7082,10000
+default,MRF vs BMCA,-0.2765,-0.3444,-0.2095,1.0,10000
+default,LIBRA vs BMCA,-0.3308,-0.3984,-0.265,1.0,10000

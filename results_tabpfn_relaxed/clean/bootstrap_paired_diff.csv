@@ -1,0 +1,4 @@
+cohort,comparison,observed_diff,ci_low_95,ci_high_95,p_value,n_boot
+clean,BMCA+MRF vs BMCA,0.0036,-0.0135,0.0209,0.3336,10000
+clean,MRF vs BMCA,-0.29,-0.3769,-0.2016,1.0,10000
+clean,LIBRA vs BMCA,-0.3109,-0.4044,-0.218,1.0,10000

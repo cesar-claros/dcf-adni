@@ -1,0 +1,5 @@
+cohort,strategy,model,estimator,n_primary_pairs,oof_auc,ci_low_95,ci_high_95,fold_aucs
+strate,L5 dementia_only,BMCA,TabPFN,47,0.6686,0.5545,0.7755,"[np.float64(0.67), np.float64(0.59), np.float64(0.58), np.float64(0.63), np.float64(0.889)]"
+strate,L5 dementia_only,MRF,TabPFN,47,0.5532,0.4468,0.6591,"[np.float64(0.75), np.float64(0.39), np.float64(0.432), np.float64(0.617), np.float64(0.617)]"
+strate,L5 dementia_only,BMCA+MRF,TabPFN,47,0.6505,0.5342,0.7615,"[np.float64(0.76), np.float64(0.54), np.float64(0.568), np.float64(0.642), np.float64(0.84)]"
+strate,L5 dementia_only,LIBRA,LIBRA raw score,47,0.4448,0.3221,0.5697,[]

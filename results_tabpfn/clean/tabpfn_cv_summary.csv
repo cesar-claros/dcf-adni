@@ -1,0 +1,5 @@
+cohort,strategy,model,estimator,n_primary_pairs,oof_auc,ci_low_95,ci_high_95,fold_aucs
+clean,L4 clean labels (no reverters + confirmed progression),BMCA,TabPFN,102,0.6374,0.5706,0.711,"[np.float64(0.664), np.float64(0.601), np.float64(0.558), np.float64(0.672), np.float64(0.755)]"
+clean,L4 clean labels (no reverters + confirmed progression),MRF,TabPFN,102,0.5032,0.4327,0.5777,"[np.float64(0.424), np.float64(0.556), np.float64(0.558), np.float64(0.462), np.float64(0.52)]"
+clean,L4 clean labels (no reverters + confirmed progression),BMCA+MRF,TabPFN,102,0.6295,0.5607,0.7035,"[np.float64(0.694), np.float64(0.594), np.float64(0.558), np.float64(0.635), np.float64(0.758)]"
+clean,L4 clean labels (no reverters + confirmed progression),LIBRA,LIBRA raw score,102,0.4813,0.4034,0.5646,[]

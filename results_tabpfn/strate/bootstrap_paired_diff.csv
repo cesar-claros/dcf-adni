@@ -1,0 +1,4 @@
+cohort,comparison,observed_diff,ci_low_95,ci_high_95,p_value,n_boot
+strate,BMCA+MRF vs BMCA,-0.0181,-0.0661,0.029,0.7718,10000
+strate,MRF vs BMCA,-0.1154,-0.2653,0.0321,0.9363,10000
+strate,LIBRA vs BMCA,-0.2239,-0.3909,-0.0487,0.995,10000

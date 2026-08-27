@@ -1,0 +1,21 @@
+cohort,strategy,model,estimator,n_primary_pairs,oof_auc,ci_low_95,ci_high_95,fold_aucs
+default,"L1 default (any_impairment, no cleaning)",BMCA,TabPFN,179,0.7952,0.7498,0.8379,"[np.float64(0.762), np.float64(0.863), np.float64(0.77), np.float64(0.756), np.float64(0.829)]"
+default,"L1 default (any_impairment, no cleaning)",MRF,TabPFN,179,0.5187,0.4606,0.5739,"[np.float64(0.471), np.float64(0.45), np.float64(0.605), np.float64(0.541), np.float64(0.598)]"
+default,"L1 default (any_impairment, no cleaning)",BMCA+MRF,TabPFN,179,0.7923,0.7485,0.8363,"[np.float64(0.758), np.float64(0.86), np.float64(0.77), np.float64(0.76), np.float64(0.829)]"
+default,"L1 default (any_impairment, no cleaning)",LIBRA,LIBRA raw score,179,0.4644,0.4014,0.5274,[]
+clean,L4 clean labels (no reverters + confirmed progression),BMCA,TabPFN,102,0.6374,0.5706,0.711,"[np.float64(0.664), np.float64(0.601), np.float64(0.558), np.float64(0.672), np.float64(0.755)]"
+clean,L4 clean labels (no reverters + confirmed progression),MRF,TabPFN,102,0.5032,0.4327,0.5777,"[np.float64(0.424), np.float64(0.556), np.float64(0.558), np.float64(0.462), np.float64(0.52)]"
+clean,L4 clean labels (no reverters + confirmed progression),BMCA+MRF,TabPFN,102,0.6295,0.5607,0.7035,"[np.float64(0.694), np.float64(0.594), np.float64(0.558), np.float64(0.635), np.float64(0.758)]"
+clean,L4 clean labels (no reverters + confirmed progression),LIBRA,LIBRA raw score,102,0.4813,0.4034,0.5646,[]
+stratm,L6 mci_only,BMCA,TabPFN,132,0.6835,0.626,0.7415,"[np.float64(0.612), np.float64(0.763), np.float64(0.633), np.float64(0.754), np.float64(0.712)]"
+stratm,L6 mci_only,MRF,TabPFN,132,0.5258,0.4629,0.5885,"[np.float64(0.499), np.float64(0.528), np.float64(0.57), np.float64(0.63), np.float64(0.436)]"
+stratm,L6 mci_only,BMCA+MRF,TabPFN,132,0.6713,0.6109,0.7324,"[np.float64(0.565), np.float64(0.744), np.float64(0.618), np.float64(0.763), np.float64(0.688)]"
+stratm,L6 mci_only,LIBRA,LIBRA raw score,132,0.4709,0.4013,0.5421,[]
+stratg,strategy G,BMCA,TabPFN,106,0.6974,0.6323,0.7634,"[np.float64(0.789), np.float64(0.705), np.float64(0.63), np.float64(0.645), np.float64(0.753)]"
+stratg,strategy G,MRF,TabPFN,106,0.5261,0.4533,0.5974,"[np.float64(0.542), np.float64(0.524), np.float64(0.619), np.float64(0.49), np.float64(0.472)]"
+stratg,strategy G,BMCA+MRF,TabPFN,106,0.6817,0.6162,0.7467,"[np.float64(0.798), np.float64(0.68), np.float64(0.637), np.float64(0.597), np.float64(0.721)]"
+stratg,strategy G,LIBRA,LIBRA raw score,106,0.4814,0.404,0.5589,[]
+strate,L5 dementia_only,BMCA,TabPFN,47,0.6686,0.5545,0.7755,"[np.float64(0.67), np.float64(0.59), np.float64(0.58), np.float64(0.63), np.float64(0.889)]"
+strate,L5 dementia_only,MRF,TabPFN,47,0.5532,0.4468,0.6591,"[np.float64(0.75), np.float64(0.39), np.float64(0.432), np.float64(0.617), np.float64(0.617)]"
+strate,L5 dementia_only,BMCA+MRF,TabPFN,47,0.6505,0.5342,0.7615,"[np.float64(0.76), np.float64(0.54), np.float64(0.568), np.float64(0.642), np.float64(0.84)]"
+strate,L5 dementia_only,LIBRA,LIBRA raw score,47,0.4448,0.3221,0.5697,[]

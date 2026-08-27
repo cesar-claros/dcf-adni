@@ -1,0 +1,5 @@
+cohort,strategy,model,estimator,n_primary_pairs,oof_auc,ci_low_95,ci_high_95,fold_aucs
+stratg,strategy G,BMCA,TabPFN,106,0.6974,0.6323,0.7634,"[np.float64(0.789), np.float64(0.705), np.float64(0.63), np.float64(0.645), np.float64(0.753)]"
+stratg,strategy G,MRF,TabPFN,106,0.5261,0.4533,0.5974,"[np.float64(0.542), np.float64(0.524), np.float64(0.619), np.float64(0.49), np.float64(0.472)]"
+stratg,strategy G,BMCA+MRF,TabPFN,106,0.6817,0.6162,0.7467,"[np.float64(0.798), np.float64(0.68), np.float64(0.637), np.float64(0.597), np.float64(0.721)]"
+stratg,strategy G,LIBRA,LIBRA raw score,106,0.4814,0.404,0.5589,[]

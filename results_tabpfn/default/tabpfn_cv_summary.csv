@@ -1,0 +1,5 @@
+cohort,strategy,model,estimator,n_primary_pairs,oof_auc,ci_low_95,ci_high_95,fold_aucs
+default,"L1 default (any_impairment, no cleaning)",BMCA,TabPFN,179,0.7952,0.7498,0.8379,"[np.float64(0.762), np.float64(0.863), np.float64(0.77), np.float64(0.756), np.float64(0.829)]"
+default,"L1 default (any_impairment, no cleaning)",MRF,TabPFN,179,0.5187,0.4606,0.5739,"[np.float64(0.471), np.float64(0.45), np.float64(0.605), np.float64(0.541), np.float64(0.598)]"
+default,"L1 default (any_impairment, no cleaning)",BMCA+MRF,TabPFN,179,0.7923,0.7485,0.8363,"[np.float64(0.758), np.float64(0.86), np.float64(0.77), np.float64(0.76), np.float64(0.829)]"
+default,"L1 default (any_impairment, no cleaning)",LIBRA,LIBRA raw score,179,0.4644,0.4014,0.5274,[]
