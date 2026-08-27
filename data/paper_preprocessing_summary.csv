@@ -1,0 +1,7 @@
+strategy,description,n_primary_pairs,n_augmentation_pairs
+L1,default,179,267
+L2,no_reverters,150,275
+L3,confirmed,116,286
+L4,clean,102,290
+L5,dementia_only,47,299
+L6,mci_only,132,277

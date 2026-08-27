@@ -1,0 +1,4 @@
+analysis_set,split,n_subjects,n_groups,n_transition,n_controls
+augmentation,train,550,275,275,275
+primary,test,100,50,50,50
+primary,train,200,100,100,100
