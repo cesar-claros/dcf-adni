@@ -37,27 +37,54 @@ The pipeline:
 
 ```
 dcf-adni/
-├── data_preprocessing.py          # Entry point: raw ADNI data → clean datasets
-├── model_training.py              # Entry point: clean datasets → trained models
-├── model_evaluation.py            # Post-hoc model evaluation and analysis
-├── main.py                        # Hydra-based entry point for preprocessing
-├── extract_demo_subset.py         # Generates a small data subset for demos
-├── preprocessing_demo.ipynb       # Jupyter notebook demoing preprocessing steps
-│
-├── src/
-│   ├── data_preprocessing.py      # ADNIPreprocess class (core preprocessing logic)
-│   ├── utils_model.py             # Model training utilities (WoE, rule extraction, etc.)
+├── pyproject.toml                 # Package metadata and dependencies (uv-managed)
+├── dcf_adni/                      # Importable library code (no __main__ logic)
+│   ├── preprocessing/
+│   │   ├── libra.py               # Stage 1: baseline rows, transition labels, LIBRA scores
+│   │   ├── mrf.py                 # Stage 2a: 31 MRF features
+│   │   ├── bmca.py                # Stage 2b: 29 BMCA features
+│   │   ├── matched_cohorts.py     # Stage 3: exact matching via binary LP
+│   │   ├── feature_exports.py     # Stage 4: orchestrates stages 1-3, exports CSVs
+│   │   ├── libra_wide.py          # Standalone LIBRA computation (mirrors libra.py)
+│   │   └── adni_preprocess.py     # ADNIPreprocess class (legacy pipeline)
+│   ├── modeling/
+│   │   └── utils_model.py         # Optuna tuning, WoE, rule extraction, importance
 │   └── utils.py                   # General utilities
 │
-├── configs/
-│   ├── config.yaml                # Hydra top-level config
-│   ├── model_training.yaml        # WoE params, categorical vars, pipeline settings
-│   └── preprocessing_pipeline/    # Hydra preprocessing pipeline configs
+├── scripts/                       # Runnable entry points (experiments and analyses)
+│   ├── model_*_evaluation.py      # One script per experiment (see Documentation/)
+│   ├── model_strate_cv_evaluation.py  # Full nested CV; shared machinery for analysis_*
+│   ├── analysis_*.py              # Post-hoc analyses over saved OOF predictions
+│   ├── run_preprocessing_paper.py # Paper preprocessing sweep
+│   ├── run_paper_experiments.py   # Paper experiment sweep
+│   └── main.py                    # Hydra-based legacy preprocessing entry point
 │
+├── configs/                       # Hydra configs (config.yaml, model_training.yaml, ...)
+├── notebooks/                     # preprocessing_demo.ipynb + demo sample_table.csv
 ├── data/                          # Input CSVs and output datasets
 ├── model/                         # Saved model artifacts
-└── README.md
+└── results*/, plots*/             # Per-experiment outputs (consolidation planned)
 ```
+
+The `dcf_adni` package is importable two ways: install it with `uv pip install -e .`, or run scripts from the repository root (each script bootstraps `sys.path` itself). Package modules with a CLI run as `python -m dcf_adni.preprocessing.feature_exports`.
+
+### File map (2026-08 reorganization)
+
+Every file kept its git history (`git log --follow`). Old paths referenced in `Documentation/` map as follows:
+
+| Old path | New path |
+|---|---|
+| `data_preprocessing_libra.py` | `dcf_adni/preprocessing/libra.py` |
+| `data_preprocessing_mrf.py` | `dcf_adni/preprocessing/mrf.py` |
+| `data_preprocessing_bmca.py` | `dcf_adni/preprocessing/bmca.py` |
+| `data_preprocessing_matched_cohorts.py` | `dcf_adni/preprocessing/matched_cohorts.py` |
+| `data_preprocessing_feature_exports.py` | `dcf_adni/preprocessing/feature_exports.py` |
+| `libra_adni_wide_v3.py` | `dcf_adni/preprocessing/libra_wide.py` |
+| `src/data_preprocessing.py` | `dcf_adni/preprocessing/adni_preprocess.py` |
+| `src/utils_model.py` | `dcf_adni/modeling/utils_model.py` |
+| `src/utils.py` | `dcf_adni/utils.py` |
+| `model_*.py`, `analysis_*.py`, `hypothesis_testing.py`, `main.py`, `run_*.py`, `data_preprocessing.py`, `extract_demo_subset.py`, `hydra_sklearn_pipeline.py` | same name under `scripts/` |
+| `preprocessing_demo.ipynb`, `sample_table.csv` | same name under `notebooks/` |
 
 ---
 
@@ -352,24 +379,25 @@ Preprocessing is configured via Hydra (`configs/preprocessing_pipeline/preproces
 
 ## Usage
 
+All commands run from the repository root.
+
 ### Step 1: Preprocess Raw Data
 
 ```bash
-python data_preprocessing.py
+python -m dcf_adni.preprocessing.feature_exports
 ```
 
-This runs the full `ADNIPreprocess` pipeline and produces `data/joint_dataset.csv` and `data/remaining_test.csv`.
-
-Alternatively, use the Hydra entry point:
+This runs stages 1-4 and produces the matched-cohort and feature CSVs in `data/`. The legacy `ADNIPreprocess` pipeline is still available:
 
 ```bash
-python main.py preprocessing_pipeline=preprocessing
+python scripts/data_preprocessing.py
+python scripts/main.py preprocessing_pipeline=preprocessing   # Hydra variant
 ```
 
 ### Step 2: Train Models
 
 ```bash
-python model_training.py --seed_split 0 --model_name catboost
+python scripts/model_training.py --seed_split 0 --model_name catboost
 ```
 
 | Argument | Options | Description |
@@ -382,7 +410,7 @@ Results are saved to `results/` and plots to `plots/`.
 ### Step 3: Explore Preprocessing (Optional)
 
 ```bash
-jupyter notebook preprocessing_demo.ipynb
+jupyter notebook notebooks/preprocessing_demo.ipynb
 ```
 
 An interactive notebook demonstrating each preprocessing step with visualizations using a subset of the data.
