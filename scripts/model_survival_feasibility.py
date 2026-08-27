@@ -46,6 +46,11 @@ import pandas as pd
 from catboost import CatBoostRegressor, Pool
 from sklearn.model_selection import StratifiedKFold
 
+import sys
+
+sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
+from dcf_adni.paths import RESULTS_DIR
+
 logging.basicConfig(level=logging.INFO, format="%(name)s — %(message)s")
 logger = logging.getLogger(__name__)
 
@@ -199,7 +204,7 @@ def evaluate_feature_set(
     return {"name": name, "c_index": c_index, "ci_low": lo, "ci_high": hi, "risk": oof_risk}
 
 
-def run(data_dir: str = "data", output_dir: str = "results_survival", seed: int = 0) -> pd.DataFrame:
+def run(data_dir: str = "data", output_dir: str = str(RESULTS_DIR / "survival"), seed: int = 0) -> pd.DataFrame:
     """Compare BMCA, MRF, BMCA+MRF and LIBRA under a time-to-event framing."""
     Path(output_dir).mkdir(parents=True, exist_ok=True)
     surv = build_survival_frame(data_dir)
@@ -267,7 +272,7 @@ def main() -> None:
     """CLI entry point."""
     parser = argparse.ArgumentParser(description="Time-to-event feasibility probe")
     parser.add_argument("--data_dir", default="data")
-    parser.add_argument("--output_dir", default="results_survival")
+    parser.add_argument("--output_dir", default=str(RESULTS_DIR / "survival"))
     parser.add_argument("--seed", type=int, default=0)
     args = parser.parse_args()
     run(data_dir=args.data_dir, output_dir=args.output_dir, seed=args.seed)

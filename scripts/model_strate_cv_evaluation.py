@@ -30,6 +30,11 @@ from catboost import CatBoostClassifier
 from sklearn.metrics import roc_auc_score
 from sklearn.model_selection import StratifiedGroupKFold
 
+import sys
+
+sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
+from dcf_adni.paths import RESULTS_DIR
+
 logging.basicConfig(level=logging.INFO, format="%(name)s — %(message)s")
 logger = logging.getLogger(__name__)
 
@@ -274,7 +279,7 @@ def run_cv_for_feature_set(
 def run(
     bmca_path: str = "data/adni_bmca_features_strate_combined_matched.csv",
     mrf_path: str = "data/adni_mrf_features_strate_combined_matched.csv",
-    output_dir: str = "results_strate_cv",
+    output_dir: str = str(RESULTS_DIR / "strate_cv"),
     n_outer: int = 5,
     n_inner: int = 5,
     n_iter: int = 50,
@@ -427,7 +432,7 @@ if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="Strategy E full CV evaluation")
     parser.add_argument("--bmca", default="data/adni_bmca_features_strate_combined_matched.csv")
     parser.add_argument("--mrf", default="data/adni_mrf_features_strate_combined_matched.csv")
-    parser.add_argument("--output_dir", default="results_strate_cv")
+    parser.add_argument("--output_dir", default=str(RESULTS_DIR / "strate_cv"))
     parser.add_argument("--n_outer", type=int, default=5)
     parser.add_argument("--n_inner", type=int, default=5)
     parser.add_argument("--n_iter", type=int, default=50)

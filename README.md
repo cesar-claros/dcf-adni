@@ -62,8 +62,10 @@ dcf-adni/
 ├── configs/                       # Hydra configs (config.yaml, model_training.yaml, ...)
 ├── notebooks/                     # preprocessing_demo.ipynb + demo sample_table.csv
 ├── data/                          # Input CSVs and output datasets
-├── model/                         # Saved model artifacts
-└── results*/, plots*/             # Per-experiment outputs (consolidation planned)
+├── results/                       # All evaluation outputs: flat single-split CSVs,
+│   │                              #   per-campaign subdirs (strate_cv/, paper/, ...),
+│   └── models/                    #   and saved model artifacts
+└── plots/                         # ROC curves + diagnostic PDFs (strate/, stratg/ subdirs)
 ```
 
 The `dcf_adni` package is importable two ways: install it with `uv pip install -e .`, or run scripts from the repository root (each script bootstraps `sys.path` itself). Package modules with a CLI run as `python -m dcf_adni.preprocessing.feature_exports`.
@@ -85,6 +87,11 @@ Every file kept its git history (`git log --follow`). Old paths referenced in `D
 | `src/utils.py` | `dcf_adni/utils.py` |
 | `model_*.py`, `analysis_*.py`, `hypothesis_testing.py`, `main.py`, `run_*.py`, `data_preprocessing.py`, `extract_demo_subset.py`, `hydra_sklearn_pipeline.py` | same name under `scripts/` |
 | `preprocessing_demo.ipynb`, `sample_table.csv` | same name under `notebooks/` |
+| `results_<name>/` (e.g. `results_strate_cv/`, `results_paper/`) | `results/<name>/` |
+| `plots_strate/`, `plots_stratg/` | `plots/strate/`, `plots/stratg/` |
+| `model/` (saved `.joblib` artifacts) | `results/models/` |
+
+Output paths are centralized in `dcf_adni/paths.py`; campaign scripts anchor their output defaults there, so results land in the repository's `results/` tree regardless of the current working directory.
 
 ---
 

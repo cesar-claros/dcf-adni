@@ -52,6 +52,11 @@ from model_strate_cv_evaluation import (
     _load_combined,
 )
 
+import sys
+
+sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
+from dcf_adni.paths import RESULTS_DIR
+
 logging.basicConfig(level=logging.INFO, format="%(name)s — %(message)s")
 logger = logging.getLogger(__name__)
 
@@ -222,7 +227,7 @@ def run_cohort(
     bmca_audit = _resolve_audit(data_dir, "bmca", tag) if use_audit else None
     mrf_audit = _resolve_audit(data_dir, "mrf", tag) if use_audit else None
 
-    output_dir = output_dir or f"results_tabpfn/{cohort}"
+    output_dir = output_dir or str(RESULTS_DIR / "tabpfn" / cohort)
     Path(output_dir).mkdir(parents=True, exist_ok=True)
 
     resolved_device = _resolve_device(device)
@@ -367,7 +372,7 @@ def main() -> None:
         help="Labeling-strategy cohort to evaluate, or 'all'.",
     )
     parser.add_argument("--data_dir", default="data")
-    parser.add_argument("--output_root", default="results_tabpfn")
+    parser.add_argument("--output_root", default=str(RESULTS_DIR / "tabpfn"))
     parser.add_argument("--n_outer", type=int, default=5)
     parser.add_argument("--seed", type=int, default=0)
     parser.add_argument("--device", default="auto", help="auto | cpu | mps | cuda")

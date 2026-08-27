@@ -11,7 +11,7 @@ Usage::
     python scripts/analysis_bmca_feature_comparison.py \
         --bmca data/adni_bmca_features_L4_combined_matched.csv \
         --bmca_audit data/adni_bmca_features_L4_column_audit.csv \
-        --output_dir results_paper/bmca_comparison
+        --output_dir results/paper/bmca_comparison
 """
 
 from __future__ import annotations
@@ -29,13 +29,18 @@ from model_strate_cv_evaluation import (
     run_cv_for_feature_set,
 )
 
+import sys
+
+sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
+from dcf_adni.paths import RESULTS_DIR
+
 logging.basicConfig(level=logging.INFO, format="%(name)s — %(message)s")
 logger = logging.getLogger(__name__)
 
 
 def run(
     bmca_path: str,
-    output_dir: str = "results_paper/bmca_comparison",
+    output_dir: str = str(RESULTS_DIR / "paper/bmca_comparison"),
     bmca_audit: str | None = None,
     n_outer: int = 5,
     n_inner: int = 5,
@@ -125,7 +130,7 @@ def run(
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="BMCA feature importance comparison")
     parser.add_argument("--bmca", required=True)
-    parser.add_argument("--output_dir", default="results_paper/bmca_comparison")
+    parser.add_argument("--output_dir", default=str(RESULTS_DIR / "paper/bmca_comparison"))
     parser.add_argument("--bmca_audit", default=None)
     parser.add_argument("--n_outer", type=int, default=5)
     parser.add_argument("--n_inner", type=int, default=5)

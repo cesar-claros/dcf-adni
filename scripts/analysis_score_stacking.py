@@ -10,14 +10,14 @@ Reads oof_predictions.csv from a completed CV run. No new model training needed.
 Usage::
 
     python scripts/analysis_score_stacking.py \
-        --oof_dir results_paper/training/combined_seed0 \
-        --output_dir results_paper/stacking/combined_seed0
+        --oof_dir results/paper/training/combined_seed0 \
+        --output_dir results/paper/stacking/combined_seed0
 
     # Run on multiple seeds
     python scripts/analysis_score_stacking.py \
-        --oof_dir results_paper/training/combined_seed0 \
-                  results_paper/training/combined_seed1 \
-        --output_dir results_paper/stacking
+        --oof_dir results/paper/training/combined_seed0 \
+                  results/paper/training/combined_seed1 \
+        --output_dir results/paper/stacking
 """
 
 from __future__ import annotations
@@ -33,6 +33,11 @@ from sklearn.metrics import roc_auc_score
 from sklearn.model_selection import StratifiedGroupKFold
 
 from model_strate_cv_evaluation import _bootstrap_auc, _bootstrap_paired_auc_diff
+
+import sys
+
+sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
+from dcf_adni.paths import RESULTS_DIR
 
 logging.basicConfig(level=logging.INFO, format="%(name)s — %(message)s")
 logger = logging.getLogger(__name__)
@@ -154,7 +159,7 @@ def run_single(oof_path: str, output_dir: str, seed: int = 0) -> dict:
 
 def run(
     oof_dirs: list[str],
-    output_dir: str = "results_paper/stacking",
+    output_dir: str = str(RESULTS_DIR / "paper/stacking"),
 ) -> None:
     """Run score stacking on OOF predictions from one or more directories."""
     Path(output_dir).mkdir(parents=True, exist_ok=True)
@@ -195,7 +200,7 @@ if __name__ == "__main__":
         "--oof_dir", nargs="+", required=True,
         help="Directories containing oof_predictions.csv",
     )
-    parser.add_argument("--output_dir", default="results_paper/stacking")
+    parser.add_argument("--output_dir", default=str(RESULTS_DIR / "paper/stacking"))
     args = parser.parse_args()
 
     run(oof_dirs=args.oof_dir, output_dir=args.output_dir)

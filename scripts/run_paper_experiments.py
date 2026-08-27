@@ -26,10 +26,15 @@ from pathlib import Path
 
 import pandas as pd
 
+import sys
+
+sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
+from dcf_adni.paths import RESULTS_DIR
+
 logging.basicConfig(level=logging.INFO, format="%(name)s — %(message)s")
 logger = logging.getLogger(__name__)
 
-RESULTS_BASE = "results_paper"
+RESULTS_BASE = str(RESULTS_DIR / "paper")
 DATA_DIR = "data"
 
 LABELING_STRATEGIES = ["L1", "L2", "L3", "L4", "L5", "L6"]

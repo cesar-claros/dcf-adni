@@ -16,7 +16,7 @@ Usage::
     python scripts/analysis_within_pair_contrast.py \
         --mrf data/adni_mrf_features_L4_combined_matched.csv \
         --mrf_audit data/adni_mrf_features_L4_column_audit.csv \
-        --output_dir results_paper/contrast
+        --output_dir results/paper/contrast
 """
 
 from __future__ import annotations
@@ -38,6 +38,11 @@ from model_strate_cv_evaluation import (
     _feature_cols,
     _load_combined,
 )
+
+import sys
+
+sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
+from dcf_adni.paths import RESULTS_DIR
 
 logging.basicConfig(level=logging.INFO, format="%(name)s — %(message)s")
 logger = logging.getLogger(__name__)
@@ -182,7 +187,7 @@ def _contrast_model(
 
 def run(
     mrf_path: str,
-    output_dir: str = "results_paper/contrast",
+    output_dir: str = str(RESULTS_DIR / "paper/contrast"),
     mrf_audit: str | None = None,
     seed: int = 0,
 ) -> dict:
@@ -258,7 +263,7 @@ if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="Within-pair contrast diagnostics")
     parser.add_argument("--mrf", required=True)
     parser.add_argument("--mrf_audit", default=None)
-    parser.add_argument("--output_dir", default="results_paper/contrast")
+    parser.add_argument("--output_dir", default=str(RESULTS_DIR / "paper/contrast"))
     parser.add_argument("--seed", type=int, default=0)
     args = parser.parse_args()
 

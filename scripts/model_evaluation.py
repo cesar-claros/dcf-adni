@@ -128,7 +128,7 @@ remaining_test_df = pd.read_csv('data/remaining_test.csv', index_col=0).set_inde
 dataset_df = feature_engineering(joint_dataset_df)
 additional_test_df = feature_engineering(remaining_test_df)
 # %%
-results_dict = joblib.load(f'model/{model_name}_split_{k}_seed_{seed_split}_seedcv_{seed_cv}_results.joblib')
+results_dict = joblib.load(f'results/models/{model_name}_split_{k}_seed_{seed_split}_seedcv_{seed_cv}_results.joblib')
 # %%
 train_index = results_dict['train_index']
 test_index = results_dict['test_index']

@@ -11,7 +11,7 @@ Usage::
     python scripts/analysis_cross_task_transfer.py \
         --bmca data/adni_bmca_features_L4_combined_matched.csv \
         --mrf data/adni_mrf_features_L4_combined_matched.csv \
-        --output_dir results_paper/training/aug_to_primary_seed0
+        --output_dir results/paper/training/aug_to_primary_seed0
 """
 
 from __future__ import annotations
@@ -35,6 +35,11 @@ from model_strate_cv_evaluation import (
     _feature_cols,
     _load_combined,
 )
+
+import sys
+
+sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
+from dcf_adni.paths import RESULTS_DIR
 
 logging.basicConfig(level=logging.INFO, format="%(name)s — %(message)s")
 logger = logging.getLogger(__name__)
@@ -143,7 +148,7 @@ def _train_and_predict(
 def run(
     bmca_path: str,
     mrf_path: str,
-    output_dir: str = "results_paper/training/aug_to_primary",
+    output_dir: str = str(RESULTS_DIR / "paper/training/aug_to_primary"),
     n_inner: int = 5,
     n_iter: int = 50,
     seed: int = 0,
@@ -247,7 +252,7 @@ if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="Cross-task transfer: aug -> primary")
     parser.add_argument("--bmca", required=True)
     parser.add_argument("--mrf", required=True)
-    parser.add_argument("--output_dir", default="results_paper/training/aug_to_primary_seed0")
+    parser.add_argument("--output_dir", default=str(RESULTS_DIR / "paper/training/aug_to_primary_seed0"))
     parser.add_argument("--n_inner", type=int, default=5)
     parser.add_argument("--n_iter", type=int, default=50)
     parser.add_argument("--seed", type=int, default=0)
