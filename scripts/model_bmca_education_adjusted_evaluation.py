@@ -59,17 +59,12 @@ import optuna
 from optuna.samplers import TPESampler
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
+from dcf_adni.modeling.bootstrap import bootstrap_auc_ci, paired_bootstrap_auc_diff
+from dcf_adni.modeling.schema import METADATA_COLS, evaluation_eligible, feature_cols
 from dcf_adni.modeling.utils_model import train_model
 
 logging.basicConfig(level=logging.INFO, format="%(name)s — %(message)s")
 logger = logging.getLogger(__name__)
-
-_METADATA_COLS = {
-    "subject_id", "pair_id", "group", "transition", "transition_label",
-    "matched_cohort", "analysis_set", "evaluation_eligible",
-    "abs_age_gap", "split", "split_group_source",
-    "first_conversion_month", "baseline_diagnosis", "n_followup_visits_ge12_with_diag",
-}
 
 LABEL_COL = "transition_label"
 GROUP_COL = "group"
@@ -79,68 +74,6 @@ SUBJECT_ID_COL = "subject_id"
 # =============================================================================
 # Data helpers
 # =============================================================================
-
-
-def _feature_cols(df: pd.DataFrame) -> list[str]:
-    return [c for c in df.columns if c not in _METADATA_COLS]
-
-
-def _evaluation_eligible(df: pd.DataFrame) -> pd.DataFrame:
-    return df[df["evaluation_eligible"] == 1].copy()
-
-
-def _bootstrap_auc(
-    y_true: np.ndarray,
-    y_score: np.ndarray,
-    groups: np.ndarray,
-    n_boot: int = 1000,
-    seed: int = 0,
-) -> tuple[float, float]:
-    rng = np.random.default_rng(seed)
-    unique_groups = np.unique(groups)
-    boot_aucs = []
-    for _ in range(n_boot):
-        sampled = rng.choice(unique_groups, size=len(unique_groups), replace=True)
-        idx = np.concatenate([np.where(groups == g)[0] for g in sampled])
-        y_b, s_b = y_true[idx], y_score[idx]
-        if len(np.unique(y_b)) < 2:
-            continue
-        boot_aucs.append(roc_auc_score(y_b, s_b))
-    boot_aucs = np.array(boot_aucs)
-    return float(np.percentile(boot_aucs, 2.5)), float(np.percentile(boot_aucs, 97.5))
-
-
-def _bootstrap_auc_diff(
-    y_true: np.ndarray,
-    y_score_a: np.ndarray,
-    y_score_b: np.ndarray,
-    groups: np.ndarray,
-    n_boot: int = 10_000,
-    seed: int = 0,
-) -> dict:
-    rng = np.random.default_rng(seed)
-    unique_groups = np.unique(groups)
-    obs_diff = roc_auc_score(y_true, y_score_a) - roc_auc_score(y_true, y_score_b)
-
-    boot_diffs = []
-    for _ in range(n_boot):
-        sampled = rng.choice(unique_groups, size=len(unique_groups), replace=True)
-        idx = np.concatenate([np.where(groups == g)[0] for g in sampled])
-        y_b = y_true[idx]
-        if len(np.unique(y_b)) < 2:
-            continue
-        boot_diffs.append(
-            roc_auc_score(y_b, y_score_a[idx]) - roc_auc_score(y_b, y_score_b[idx])
-        )
-
-    boot_diffs = np.array(boot_diffs)
-    return {
-        "observed_diff": obs_diff,
-        "ci_low": float(np.percentile(boot_diffs, 2.5)),
-        "ci_high": float(np.percentile(boot_diffs, 97.5)),
-        "p_value": float(np.mean(boot_diffs <= 0)),
-        "n_boot": len(boot_diffs),
-    }
 
 
 # =============================================================================
@@ -237,9 +170,9 @@ def _train_and_evaluate(
     n_boot: int = 1000,
 ) -> dict:
     """Train CatBoost with Optuna and evaluate on primary test set."""
-    feature_cols = _feature_cols(train_df)
+    feats = feature_cols(train_df)
 
-    X_train = train_df[feature_cols]
+    X_train = train_df[feats]
     y_train = train_df[LABEL_COL].astype(float)
     groups_train = train_df[GROUP_COL]
 
@@ -248,11 +181,11 @@ def _train_and_evaluate(
 
     logger.info(
         f"Training {model_name}: "
-        f"{len(feature_cols)} features, {len(X_train)} train rows."
+        f"{len(feats)} features, {len(X_train)} train rows."
     )
 
-    eligible = _evaluation_eligible(test_df)
-    X_test = eligible[feature_cols]
+    eligible = evaluation_eligible(test_df)
+    X_test = eligible[feats]
     y_test = eligible[LABEL_COL].astype(float)
 
     study, best_model, inner_splits = train_model(
@@ -276,11 +209,11 @@ def _train_and_evaluate(
     y_test_arr = y_test.values
     y_score = best_model.predict_proba(X_test)[:, 1]
     auc = roc_auc_score(y_test_arr, y_score)
-    ci_low, ci_high = _bootstrap_auc(y_test_arr, y_score, groups_test, n_boot=n_boot, seed=seed)
+    ci_low, ci_high = bootstrap_auc_ci(y_test_arr, y_score, groups_test, n_boot=n_boot, seed=seed)
 
     importances = best_model.get_feature_importance()
     imp_df = (
-        pd.DataFrame({"feature": feature_cols, "importance": importances})
+        pd.DataFrame({"feature": feats, "importance": importances})
         .sort_values("importance", ascending=False)
         .reset_index(drop=True)
     )
@@ -292,7 +225,7 @@ def _train_and_evaluate(
         "model_name": model_name,
         "study": study,
         "model": best_model,
-        "feature_cols": feature_cols,
+        "feature_cols": feats,
         "auc": auc,
         "ci_low": ci_low,
         "ci_high": ci_high,
@@ -429,11 +362,11 @@ def run(
     logger.info("\n--- Paired bootstrap AUC differences ---")
     all_results = [r_baseline, r_cdrsb, r_multi]
 
-    diff_cdrsb = _bootstrap_auc_diff(
+    diff_cdrsb = paired_bootstrap_auc_diff(
         r_baseline["y_true"], r_cdrsb["y_score"], r_baseline["y_score"],
         r_baseline["groups"], n_boot=10_000, seed=seed,
     )
-    diff_multi = _bootstrap_auc_diff(
+    diff_multi = paired_bootstrap_auc_diff(
         r_baseline["y_true"], r_multi["y_score"], r_baseline["y_score"],
         r_baseline["groups"], n_boot=10_000, seed=seed,
     )

@@ -44,17 +44,12 @@ from sklearn.metrics import RocCurveDisplay
 from tqdm import tqdm
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
+from dcf_adni.modeling.bootstrap import bootstrap_auc_ci
+from dcf_adni.modeling.schema import METADATA_COLS, evaluation_eligible, feature_cols
 from dcf_adni.modeling.utils_model import create_model, train_model, _encode_categoricals
 
 logging.basicConfig(level=logging.INFO, format="%(name)s — %(message)s")
 logger = logging.getLogger(__name__)
-
-_METADATA_COLS = {
-    "subject_id", "pair_id", "group", "transition", "transition_label",
-    "matched_cohort", "analysis_set", "evaluation_eligible",
-    "abs_age_gap", "split", "split_group_source",
-    "first_conversion_month", "baseline_diagnosis", "n_followup_visits_ge12_with_diag",
-}
 
 LABEL_COL = "transition_label"
 GROUP_COL = "group"
@@ -71,14 +66,6 @@ def _load_splits(train_path: str, test_path: str) -> tuple[pd.DataFrame, pd.Data
     return pd.read_csv(train_path), pd.read_csv(test_path)
 
 
-def _feature_cols(df: pd.DataFrame) -> list[str]:
-    return [c for c in df.columns if c not in _METADATA_COLS]
-
-
-def _evaluation_eligible(df: pd.DataFrame) -> pd.DataFrame:
-    return df[df["evaluation_eligible"] == 1].copy()
-
-
 def _verify_alignment(bmca_df: pd.DataFrame, mrf_df: pd.DataFrame, split: str) -> None:
     if not (bmca_df["subject_id"].values == mrf_df["subject_id"].values).all():
         raise ValueError(
@@ -89,27 +76,6 @@ def _verify_alignment(bmca_df: pd.DataFrame, mrf_df: pd.DataFrame, split: str) -
 # =============================================================================
 # Bootstrap AUC CI
 # =============================================================================
-
-
-def _bootstrap_auc(
-    y_true: np.ndarray,
-    y_score: np.ndarray,
-    groups: np.ndarray,
-    n_boot: int = 1000,
-    seed: int = 0,
-) -> tuple[float, float]:
-    rng = np.random.default_rng(seed)
-    unique_groups = np.unique(groups)
-    boot_aucs = []
-    for _ in range(n_boot):
-        sampled = rng.choice(unique_groups, size=len(unique_groups), replace=True)
-        idx = np.concatenate([np.where(groups == g)[0] for g in sampled])
-        y_b, s_b = y_true[idx], y_score[idx]
-        if len(np.unique(y_b)) < 2:
-            continue
-        boot_aucs.append(roc_auc_score(y_b, s_b))
-    boot_aucs = np.array(boot_aucs)
-    return float(np.percentile(boot_aucs, 2.5)), float(np.percentile(boot_aucs, 97.5))
 
 
 # =============================================================================
@@ -159,14 +125,14 @@ def _evaluate(
     n_boot: int,
     seed: int,
 ) -> dict:
-    eligible = _evaluation_eligible(test_df)
+    eligible = evaluation_eligible(test_df)
     X = eligible[feature_cols]
     y = eligible[LABEL_COL].values.astype(float)
     groups = eligible[GROUP_COL].values
 
     scores = model.predict_proba(X)[:, 1]
     auc = roc_auc_score(y, scores)
-    ci_low, ci_high = _bootstrap_auc(y, scores, groups, n_boot=n_boot, seed=seed)
+    ci_low, ci_high = bootstrap_auc_ci(y, scores, groups, n_boot=n_boot, seed=seed)
     logger.info(f"{label}  AUC = {auc:.3f}  95% CI [{ci_low:.3f}, {ci_high:.3f}]")
     return {"auc": auc, "ci_low": ci_low, "ci_high": ci_high,
             "y_true": y, "scores": scores, "groups": groups}
@@ -280,8 +246,8 @@ def run(
     y_test = bmca_test_df[LABEL_COL].astype(float)
     groups_train = bmca_train_df[GROUP_COL]
 
-    bmca_feat_cols = _feature_cols(bmca_train_df)
-    mrf_feat_cols = _feature_cols(mrf_train_df)
+    bmca_feat_cols = feature_cols(bmca_train_df)
+    mrf_feat_cols = feature_cols(mrf_train_df)
 
     X_bmca_train = bmca_train_df[bmca_feat_cols].copy()
     X_bmca_test = bmca_test_df[bmca_feat_cols].copy()

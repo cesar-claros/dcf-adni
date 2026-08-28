@@ -61,19 +61,14 @@ from sklearn.metrics import RocCurveDisplay, roc_auc_score
 from sklearn.model_selection import StratifiedGroupKFold, cross_val_predict
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
+from dcf_adni.modeling.bootstrap import bootstrap_auc_ci
+from dcf_adni.modeling.schema import METADATA_COLS, evaluation_eligible, feature_cols
 from dcf_adni.modeling.utils_model import train_model
 
 logging.basicConfig(level=logging.INFO, format="%(name)s — %(message)s")
 logger = logging.getLogger(__name__)
 
 # Columns that are not features — metadata, cohort provenance, and outcome-derived variables.
-_METADATA_COLS = {
-    "subject_id", "pair_id", "group", "transition", "transition_label",
-    "matched_cohort", "analysis_set", "evaluation_eligible",
-    "abs_age_gap", "split", "split_group_source",
-    "first_conversion_month", "baseline_diagnosis", "n_followup_visits_ge12_with_diag",
-}
-
 LABEL_COL = "transition_label"
 GROUP_COL = "group"
 
@@ -89,39 +84,9 @@ def _load_splits(train_path: str, test_path: str) -> tuple[pd.DataFrame, pd.Data
     return train, test
 
 
-def _feature_cols(df: pd.DataFrame) -> list[str]:
-    return [c for c in df.columns if c not in _METADATA_COLS]
-
-
-def _evaluation_eligible(df: pd.DataFrame) -> pd.DataFrame:
-    return df[df["evaluation_eligible"] == 1].copy()
-
-
 # =============================================================================
 # Bootstrap AUC CI (resample at matched-pair level)
 # =============================================================================
-
-
-def _bootstrap_auc(
-    y_true: np.ndarray,
-    y_score: np.ndarray,
-    groups: np.ndarray,
-    n_boot: int = 1000,
-    seed: int = 0,
-) -> tuple[float, float]:
-    """Bootstrap 95% CI for AUC by resampling matched pairs with replacement."""
-    rng = np.random.default_rng(seed)
-    unique_groups = np.unique(groups)
-    boot_aucs = []
-    for _ in range(n_boot):
-        sampled = rng.choice(unique_groups, size=len(unique_groups), replace=True)
-        idx = np.concatenate([np.where(groups == g)[0] for g in sampled])
-        y_b, s_b = y_true[idx], y_score[idx]
-        if len(np.unique(y_b)) < 2:
-            continue
-        boot_aucs.append(roc_auc_score(y_b, s_b))
-    boot_aucs = np.array(boot_aucs)
-    return float(np.percentile(boot_aucs, 2.5)), float(np.percentile(boot_aucs, 97.5))
 
 
 # =============================================================================
@@ -145,18 +110,18 @@ def _train_base_model(
     Identical setup to model_bmca_evaluation.py / model_mrf_evaluation.py.
     Returns (study, best_model, inner_splits).
     """
-    feature_cols = _feature_cols(train_df)
-    X_train = train_df[feature_cols]
+    feats = feature_cols(train_df)
+    X_train = train_df[feats]
     y_train = train_df[LABEL_COL].astype(float)
     groups_train = train_df[GROUP_COL]
-    X_test = test_df[feature_cols]
+    X_test = test_df[feats]
     y_test = test_df[LABEL_COL].astype(float)
 
     cv = StratifiedGroupKFold(n_splits=n_splits, shuffle=True, random_state=seed)
     val_mask = (train_df["analysis_set"] == "primary").values
 
     logger.info(
-        f"Training {label} model: {len(feature_cols)} features, "
+        f"Training {label} model: {len(feats)} features, "
         f"{len(X_train)} train rows, {n_iter} Optuna trials."
     )
 
@@ -201,8 +166,8 @@ def _compute_oof_scores(
     CatBoost is multi-threaded internally, so cross_val_predict runs folds
     sequentially (n_jobs=1) to avoid resource contention.
     """
-    feature_cols = _feature_cols(train_df)
-    X_train = train_df[feature_cols]
+    feats = feature_cols(train_df)
+    X_train = train_df[feats]
     y_train = train_df[LABEL_COL].astype(float)
 
     oof_scores = cross_val_predict(
@@ -275,8 +240,8 @@ def _evaluate_test(
     Filters both test DataFrames to evaluation_eligible == 1 and verifies
     subject-level alignment before computing scores.
     """
-    bmca_elig = _evaluation_eligible(bmca_test_df)
-    mrf_elig = _evaluation_eligible(mrf_test_df)
+    bmca_elig = evaluation_eligible(bmca_test_df)
+    mrf_elig = evaluation_eligible(mrf_test_df)
 
     if not (bmca_elig["subject_id"].values == mrf_elig["subject_id"].values).all():
         raise ValueError(
@@ -285,8 +250,8 @@ def _evaluate_test(
             "same train/test split."
         )
 
-    bmca_feat = _feature_cols(bmca_test_df)
-    mrf_feat = _feature_cols(mrf_test_df)
+    bmca_feat = feature_cols(bmca_test_df)
+    mrf_feat = feature_cols(mrf_test_df)
 
     y_test = bmca_elig[LABEL_COL].values.astype(float)
     groups_test = bmca_elig[GROUP_COL].values
@@ -304,7 +269,7 @@ def _evaluate_test(
         ("stacked", stacked_scores),
     ]:
         auc = roc_auc_score(y_test, scores)
-        ci_low, ci_high = _bootstrap_auc(y_test, scores, groups_test, n_boot=n_boot, seed=seed)
+        ci_low, ci_high = bootstrap_auc_ci(y_test, scores, groups_test, n_boot=n_boot, seed=seed)
         result[name] = {"auc": auc, "ci_low": ci_low, "ci_high": ci_high, "scores": scores}
         logger.info(
             f"  {name.upper():>8s}  AUC = {auc:.3f}  95% CI [{ci_low:.3f}, {ci_high:.3f}]"

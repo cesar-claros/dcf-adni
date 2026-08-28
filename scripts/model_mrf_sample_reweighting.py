@@ -72,78 +72,17 @@ from sklearn.model_selection import StratifiedGroupKFold
 import optuna
 from optuna.samplers import TPESampler
 
+
+sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
+from dcf_adni.modeling.bootstrap import bootstrap_auc_ci, paired_bootstrap_auc_diff
+from dcf_adni.modeling.schema import METADATA_COLS, evaluation_eligible, feature_cols
+
 logging.basicConfig(level=logging.INFO, format="%(name)s — %(message)s")
 logger = logging.getLogger(__name__)
-
-_METADATA_COLS = {
-    "subject_id", "pair_id", "group", "transition", "transition_label",
-    "matched_cohort", "analysis_set", "evaluation_eligible",
-    "abs_age_gap", "split", "split_group_source",
-    "first_conversion_month", "baseline_diagnosis", "n_followup_visits_ge12_with_diag",
-}
 
 LABEL_COL = "transition_label"
 GROUP_COL = "group"
 SUBJECT_ID_COL = "subject_id"
-
-
-def _feature_cols(df: pd.DataFrame) -> list[str]:
-    return [c for c in df.columns if c not in _METADATA_COLS]
-
-
-def _evaluation_eligible(df: pd.DataFrame) -> pd.DataFrame:
-    return df[df["evaluation_eligible"] == 1].copy()
-
-
-def _bootstrap_auc(
-    y_true: np.ndarray,
-    y_score: np.ndarray,
-    groups: np.ndarray,
-    n_boot: int = 1000,
-    seed: int = 0,
-) -> tuple[float, float]:
-    rng = np.random.default_rng(seed)
-    unique_groups = np.unique(groups)
-    boot_aucs = []
-    for _ in range(n_boot):
-        sampled = rng.choice(unique_groups, size=len(unique_groups), replace=True)
-        idx = np.concatenate([np.where(groups == g)[0] for g in sampled])
-        y_b, s_b = y_true[idx], y_score[idx]
-        if len(np.unique(y_b)) < 2:
-            continue
-        boot_aucs.append(roc_auc_score(y_b, s_b))
-    return float(np.percentile(boot_aucs, 2.5)), float(np.percentile(boot_aucs, 97.5))
-
-
-def _bootstrap_auc_diff(
-    y_true: np.ndarray,
-    y_score_a: np.ndarray,
-    y_score_b: np.ndarray,
-    groups: np.ndarray,
-    n_boot: int = 10_000,
-    seed: int = 0,
-) -> dict:
-    rng = np.random.default_rng(seed)
-    unique_groups = np.unique(groups)
-    obs_diff = roc_auc_score(y_true, y_score_a) - roc_auc_score(y_true, y_score_b)
-    boot_diffs = []
-    for _ in range(n_boot):
-        sampled = rng.choice(unique_groups, size=len(unique_groups), replace=True)
-        idx = np.concatenate([np.where(groups == g)[0] for g in sampled])
-        y_b = y_true[idx]
-        if len(np.unique(y_b)) < 2:
-            continue
-        boot_diffs.append(
-            roc_auc_score(y_b, y_score_a[idx]) - roc_auc_score(y_b, y_score_b[idx])
-        )
-    boot_diffs = np.array(boot_diffs)
-    return {
-        "observed_diff": obs_diff,
-        "ci_low": float(np.percentile(boot_diffs, 2.5)),
-        "ci_high": float(np.percentile(boot_diffs, 97.5)),
-        "p_value": float(np.mean(boot_diffs <= 0)),
-        "n_boot": len(boot_diffs),
-    }
 
 
 # =============================================================================
@@ -250,7 +189,7 @@ def _get_mrf_aug_oof(
     indexed in the same order as augmentation rows in mrf_train.
     """
     aug = mrf_train[mrf_train["analysis_set"] == "augmentation"].copy()
-    mrf_feats = _feature_cols(aug)
+    mrf_feats = feature_cols(aug)
     X_aug = aug[mrf_feats]
     y_aug = aug[LABEL_COL].values.astype(float)
     groups_aug = aug[GROUP_COL].values
@@ -369,14 +308,14 @@ def _evaluate_model(
     n_boot: int,
     seed: int,
 ) -> dict:
-    eligible = _evaluation_eligible(test_df)
+    eligible = evaluation_eligible(test_df)
     X_test = eligible[feature_cols]
     y_test_arr = eligible[LABEL_COL].values.astype(float)
     groups_test = eligible[GROUP_COL].values
 
     y_score = best_model.predict_proba(X_test)[:, 1]
     auc = roc_auc_score(y_test_arr, y_score)
-    ci_low, ci_high = _bootstrap_auc(y_test_arr, y_score, groups_test, n_boot, seed)
+    ci_low, ci_high = bootstrap_auc_ci(y_test_arr, y_score, groups_test, n_boot, seed)
 
     imp_df = (
         pd.DataFrame({
@@ -456,8 +395,8 @@ def run(
     bmca_test = pd.read_csv(bmca_test_path)
     mrf_train = pd.read_csv(mrf_train_path)
 
-    feature_cols = _feature_cols(bmca_train)
-    X_train = bmca_train[feature_cols]
+    feats = feature_cols(bmca_train)
+    X_train = bmca_train[feats]
     y_train = bmca_train[LABEL_COL].values.astype(float)
     groups_train = bmca_train[GROUP_COL].values
     val_mask = (bmca_train["analysis_set"] == "primary").values
@@ -469,7 +408,7 @@ def run(
         f"Strategy 5: MRF-Informed Sample Reweighting (Exp 14-Adapted)\n"
         f"{'='*60}\n"
         f"Training subjects: {len(bmca_train)} ({n_primary} primary, {n_aug} augmentation)\n"
-        f"BMCA features: {len(feature_cols)}\n"
+        f"BMCA features: {len(feats)}\n"
         f"alpha: {alpha}\n"
         f"MRF weights applied to: augmentation subjects only"
     )
@@ -562,7 +501,7 @@ def run(
             weights=weights, n_iter=n_iter, seed=seed,
             label=name,
         )
-        ev = _evaluate_model(best_model, bmca_test, feature_cols, n_boot, seed)
+        ev = _evaluate_model(best_model, bmca_test, feats, n_boot, seed)
 
         logger.info(
             f"{name}  AUC = {ev['auc']:.3f}  "
@@ -585,7 +524,7 @@ def run(
     # ------------------------------------------------------------------
     diffs = []
     for r in results[1:]:
-        diff = _bootstrap_auc_diff(
+        diff = paired_bootstrap_auc_diff(
             baseline["eval"]["y_true"],
             r["eval"]["y_score"],
             baseline["eval"]["y_score"],
@@ -618,7 +557,7 @@ def run(
             "auc_ci_low_95": round(ev["ci_low"], 4),
             "auc_ci_high_95": round(ev["ci_high"], 4),
             "best_inner_cv_auc": round(r["study"].best_value, 4),
-            "n_features": len(feature_cols),
+            "n_features": len(feats),
             **{f"param_{k}": v for k, v in r["study"].best_params.items()},
         }
         metrics_rows.append(row)

@@ -42,19 +42,12 @@ import pandas as pd
 from sklearn.metrics import roc_auc_score
 from sklearn.model_selection import StratifiedGroupKFold
 
-from model_strate_cv_evaluation import (
-    _METADATA_COLS,
-    GROUP_COL,
-    LABEL_COL,
-    _bootstrap_auc,
-    _bootstrap_paired_auc_diff,
-    _feature_cols,
-    _load_combined,
-)
 
 import sys
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
+from dcf_adni.modeling.bootstrap import bootstrap_auc_ci, paired_bootstrap_auc_diff
+from dcf_adni.modeling.schema import GROUP_COL, METADATA_COLS, TRANSITION_COL, feature_cols, load_combined
 from dcf_adni.paths import RESULTS_DIR
 
 logging.basicConfig(level=logging.INFO, format="%(name)s — %(message)s")
@@ -152,16 +145,16 @@ def run_cv_for_feature_set(
     fold_aucs = []
 
     for fold_idx, (train_idx, test_idx) in enumerate(
-        outer_cv.split(cv_df, y=cv_df[LABEL_COL], groups=cv_df[GROUP_COL])
+        outer_cv.split(cv_df, y=cv_df[TRANSITION_COL], groups=cv_df[GROUP_COL])
     ):
         cv_train = cv_df.iloc[train_idx]
         cv_test = cv_df.iloc[test_idx]
         fold_train = pd.concat([cv_train, extra_train_df], ignore_index=True)
 
         x_train = fold_train[feature_cols].to_numpy(dtype=np.float64)
-        y_train = fold_train[LABEL_COL].astype(float).to_numpy()
+        y_train = fold_train[TRANSITION_COL].astype(float).to_numpy()
         x_test = cv_test[feature_cols].to_numpy(dtype=np.float64)
-        y_test = cv_test[LABEL_COL].astype(float).to_numpy()
+        y_test = cv_test[TRANSITION_COL].astype(float).to_numpy()
 
         model = _build_estimator(seed=seed, device=device)
         model.fit(x_train, y_train)
@@ -183,10 +176,10 @@ def run_cv_for_feature_set(
             fold_auc,
         )
 
-    y_all = cv_df[LABEL_COL].astype(float).to_numpy()
+    y_all = cv_df[TRANSITION_COL].astype(float).to_numpy()
     groups_all = cv_df[GROUP_COL].to_numpy()
     oof_auc = roc_auc_score(y_all, oof_scores)
-    ci_low, ci_high = _bootstrap_auc(y_all, oof_scores, groups_all, n_boot=2000, seed=seed)
+    ci_low, ci_high = bootstrap_auc_ci(y_all, oof_scores, groups_all, n_boot=2000, seed=seed)
 
     logger.info(
         "  [%s] OOF AUC = %.3f  95%% CI [%.3f, %.3f]  (n=%d pairs, mode=%s)",
@@ -231,13 +224,13 @@ def run_cohort(
     Path(output_dir).mkdir(parents=True, exist_ok=True)
 
     resolved_device = _resolve_device(device)
-    bmca_df = _load_combined(bmca_path)
-    mrf_df = _load_combined(mrf_path)
+    bmca_df = load_combined(bmca_path)
+    mrf_df = load_combined(mrf_path)
 
-    bmca_features = _feature_cols(bmca_df, bmca_audit)
-    mrf_features = _feature_cols(mrf_df, mrf_audit)
+    bmca_features = feature_cols(bmca_df, bmca_audit)
+    mrf_features = feature_cols(mrf_df, mrf_audit)
 
-    meta_cols = [c for c in bmca_df.columns if c in _METADATA_COLS]
+    meta_cols = [c for c in bmca_df.columns if c in METADATA_COLS]
     bmca_mrf_df = bmca_df.merge(
         mrf_df.drop(columns=[c for c in meta_cols if c != "subject_id"], errors="ignore"),
         on="subject_id",
@@ -284,7 +277,7 @@ def run_cohort(
         valid = ~np.isnan(libra_scores) & ~np.isnan(y_cv)
         if valid.sum() > 0 and len(np.unique(y_cv[valid])) >= 2:
             libra_auc = roc_auc_score(y_cv[valid], libra_scores[valid])
-            lo, hi = _bootstrap_auc(
+            lo, hi = bootstrap_auc_ci(
                 y_cv[valid], libra_scores[valid], groups_cv[valid], n_boot=2000, seed=seed
             )
             results["LIBRA"] = {
@@ -328,7 +321,7 @@ def run_cohort(
     bootstrap_rows = []
     for name_a, name_b in [("BMCA+MRF", "BMCA"), ("MRF", "BMCA"), ("LIBRA", "BMCA")]:
         if name_a in results and name_b in results:
-            bt = _bootstrap_paired_auc_diff(
+            bt = paired_bootstrap_auc_diff(
                 y_cv,
                 results[name_a]["oof_scores"],
                 results[name_b]["oof_scores"],

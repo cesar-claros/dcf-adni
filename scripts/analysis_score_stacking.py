@@ -32,11 +32,11 @@ from sklearn.linear_model import LogisticRegression
 from sklearn.metrics import roc_auc_score
 from sklearn.model_selection import StratifiedGroupKFold
 
-from model_strate_cv_evaluation import _bootstrap_auc, _bootstrap_paired_auc_diff
 
 import sys
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
+from dcf_adni.modeling.bootstrap import bootstrap_auc_ci, paired_bootstrap_auc_diff
 from dcf_adni.paths import RESULTS_DIR
 
 logging.basicConfig(level=logging.INFO, format="%(name)s — %(message)s")
@@ -70,7 +70,7 @@ def _stack_oof(oof_df: pd.DataFrame, seed: int = 0, n_folds: int = 5) -> dict:
 
     avg_coef = np.mean(coefficients, axis=0)
     stacked_auc = roc_auc_score(y, stacked_scores)
-    ci_low, ci_high = _bootstrap_auc(y, stacked_scores, groups, n_boot=2000, seed=seed)
+    ci_low, ci_high = bootstrap_auc_ci(y, stacked_scores, groups, n_boot=2000, seed=seed)
 
     # MRF weight relative to BMCA
     bmca_weight = avg_coef[0]
@@ -106,10 +106,10 @@ def run_single(oof_path: str, output_dir: str, seed: int = 0) -> dict:
 
     # BMCA-only AUC for comparison
     bmca_auc = roc_auc_score(y, bmca_scores)
-    bmca_ci_low, bmca_ci_high = _bootstrap_auc(y, bmca_scores, groups, n_boot=2000, seed=seed)
+    bmca_ci_low, bmca_ci_high = bootstrap_auc_ci(y, bmca_scores, groups, n_boot=2000, seed=seed)
 
     # Paired bootstrap: Stacked vs BMCA
-    bt = _bootstrap_paired_auc_diff(
+    bt = paired_bootstrap_auc_diff(
         y, result["stacked_scores"], bmca_scores, groups,
         n_boot=10000, seed=seed,
     )

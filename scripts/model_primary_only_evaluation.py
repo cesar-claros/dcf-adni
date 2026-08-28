@@ -51,17 +51,15 @@ from sklearn.model_selection import StratifiedGroupKFold
 import optuna
 from optuna.samplers import TPESampler
 
+
+sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
+from dcf_adni.modeling.bootstrap import bootstrap_auc_ci, paired_bootstrap_auc_diff
+from dcf_adni.modeling.schema import METADATA_COLS, evaluation_eligible, feature_cols
+
 logging.basicConfig(level=logging.INFO, format="%(name)s — %(message)s")
 logger = logging.getLogger(__name__)
 
 # Columns that are not features — metadata, cohort provenance, and outcome-derived variables.
-_METADATA_COLS = {
-    "subject_id", "pair_id", "group", "transition", "transition_label",
-    "matched_cohort", "analysis_set", "evaluation_eligible",
-    "abs_age_gap", "split", "split_group_source",
-    "first_conversion_month", "baseline_diagnosis", "n_followup_visits_ge12_with_diag",
-}
-
 LABEL_COL = "transition_label"
 GROUP_COL = "group"
 SUBJECT_ID_COL = "subject_id"
@@ -70,10 +68,6 @@ SUBJECT_ID_COL = "subject_id"
 # =============================================================================
 # Data helpers
 # =============================================================================
-
-
-def _feature_cols(df: pd.DataFrame) -> list[str]:
-    return [c for c in df.columns if c not in _METADATA_COLS]
 
 
 def _filter_primary(df: pd.DataFrame) -> pd.DataFrame:
@@ -92,8 +86,8 @@ def _merge_feature_tables(
     mrf_df: pd.DataFrame,
 ) -> pd.DataFrame:
     """Merge BMCA and MRF tables on subject_id."""
-    bmca_feats = _feature_cols(bmca_df)
-    mrf_feats = _feature_cols(mrf_df)
+    bmca_feats = feature_cols(bmca_df)
+    mrf_feats = feature_cols(mrf_df)
 
     overlap = set(bmca_feats) & set(mrf_feats)
     if overlap:
@@ -111,75 +105,9 @@ def _merge_feature_tables(
     return merged
 
 
-def _evaluation_eligible(df: pd.DataFrame) -> pd.DataFrame:
-    return df[df["evaluation_eligible"] == 1].copy()
-
-
 # =============================================================================
 # Bootstrap AUC CI (resample at matched-pair level)
 # =============================================================================
-
-
-def _bootstrap_auc(
-    y_true: np.ndarray,
-    y_score: np.ndarray,
-    groups: np.ndarray,
-    n_boot: int = 1000,
-    seed: int = 0,
-) -> tuple[float, float]:
-    """Bootstrap 95% CI for AUC by resampling matched pairs with replacement."""
-    rng = np.random.default_rng(seed)
-    unique_groups = np.unique(groups)
-    boot_aucs = []
-    for _ in range(n_boot):
-        sampled = rng.choice(unique_groups, size=len(unique_groups), replace=True)
-        idx = np.concatenate([np.where(groups == g)[0] for g in sampled])
-        y_b, s_b = y_true[idx], y_score[idx]
-        if len(np.unique(y_b)) < 2:
-            continue
-        boot_aucs.append(roc_auc_score(y_b, s_b))
-    boot_aucs = np.array(boot_aucs)
-    return float(np.percentile(boot_aucs, 2.5)), float(np.percentile(boot_aucs, 97.5))
-
-
-def _bootstrap_auc_diff(
-    y_true: np.ndarray,
-    y_score_a: np.ndarray,
-    y_score_b: np.ndarray,
-    groups: np.ndarray,
-    n_boot: int = 10_000,
-    seed: int = 0,
-) -> dict:
-    """Paired bootstrap test for AUC(A) - AUC(B), resampling at pair level."""
-    rng = np.random.default_rng(seed)
-    unique_groups = np.unique(groups)
-    obs_auc_a = roc_auc_score(y_true, y_score_a)
-    obs_auc_b = roc_auc_score(y_true, y_score_b)
-    obs_diff = obs_auc_a - obs_auc_b
-
-    boot_diffs = []
-    for _ in range(n_boot):
-        sampled = rng.choice(unique_groups, size=len(unique_groups), replace=True)
-        idx = np.concatenate([np.where(groups == g)[0] for g in sampled])
-        y_b = y_true[idx]
-        if len(np.unique(y_b)) < 2:
-            continue
-        auc_a = roc_auc_score(y_b, y_score_a[idx])
-        auc_b = roc_auc_score(y_b, y_score_b[idx])
-        boot_diffs.append(auc_a - auc_b)
-
-    boot_diffs = np.array(boot_diffs)
-    ci_low = float(np.percentile(boot_diffs, 2.5))
-    ci_high = float(np.percentile(boot_diffs, 97.5))
-    p_value = float(np.mean(boot_diffs <= 0))
-
-    return {
-        "observed_diff": obs_diff,
-        "ci_low": ci_low,
-        "ci_high": ci_high,
-        "p_value": p_value,
-        "n_boot": len(boot_diffs),
-    }
 
 
 # =============================================================================
@@ -263,14 +191,14 @@ def _evaluate(
     seed: int = 0,
 ) -> dict:
     """Evaluate on the primary test set (evaluation_eligible == 1)."""
-    eligible = _evaluation_eligible(test_df)
+    eligible = evaluation_eligible(test_df)
     X_test = eligible[feature_cols]
     y_test = eligible[LABEL_COL].values.astype(float)
     groups = eligible[GROUP_COL].values
 
     y_score = model.predict_proba(X_test)[:, 1]
     auc = roc_auc_score(y_test, y_score)
-    ci_low, ci_high = _bootstrap_auc(y_test, y_score, groups, n_boot=n_boot, seed=seed)
+    ci_low, ci_high = bootstrap_auc_ci(y_test, y_score, groups, n_boot=n_boot, seed=seed)
 
     logger.info(
         f"{model_name}  AUC = {auc:.3f}  95% CI [{ci_low:.3f}, {ci_high:.3f}]"
@@ -375,8 +303,8 @@ def run(
     combined_train_primary = _merge_feature_tables(bmca_train_primary, mrf_train_primary)
     combined_test = _merge_feature_tables(bmca_test, mrf_test)
 
-    bmca_feature_cols = _feature_cols(bmca_train_primary)
-    combined_feature_cols = _feature_cols(combined_train_primary)
+    bmca_feature_cols = feature_cols(bmca_train_primary)
+    combined_feature_cols = feature_cols(combined_train_primary)
 
     n_primary_pairs = bmca_train_primary[GROUP_COL].nunique()
     logger.info(
@@ -444,7 +372,7 @@ def run(
     # 6. Paired bootstrap AUC difference test
     # ------------------------------------------------------------------
     logger.info("\n--- Paired bootstrap AUC difference ---")
-    diff_test = _bootstrap_auc_diff(
+    diff_test = paired_bootstrap_auc_diff(
         result_bmca["y_true"],
         result_combined["y_score"],
         result_bmca["y_score"],
@@ -468,7 +396,7 @@ def run(
     logger.info(f"\nBMCA+MRF top 10 features:\n{imp_combined.head(10).to_string(index=False)}")
 
     # Separate MRF features in the combined model importance
-    mrf_feature_cols = _feature_cols(mrf_train_primary)
+    mrf_feature_cols = feature_cols(mrf_train_primary)
     mrf_in_combined = imp_combined[imp_combined["feature"].isin(mrf_feature_cols)]
     logger.info(f"\nMRF features in BMCA+MRF model (top 10):\n{mrf_in_combined.head(10).to_string(index=False)}")
 

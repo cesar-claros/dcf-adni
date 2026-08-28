@@ -49,6 +49,12 @@ from scipy.stats import norm
 from sklearn.metrics import RocCurveDisplay, roc_auc_score
 from statsmodels.discrete.conditional_models import ConditionalLogit
 
+import sys
+
+sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
+from dcf_adni.modeling.bootstrap import bootstrap_auc_ci
+from dcf_adni.modeling.schema import evaluation_eligible
+
 logging.basicConfig(level=logging.INFO, format="%(name)s — %(message)s")
 logger = logging.getLogger(__name__)
 
@@ -76,38 +82,9 @@ def _primary_pairs(df: pd.DataFrame) -> pd.DataFrame:
     return df[df["analysis_set"] == "primary"].copy()
 
 
-def _evaluation_eligible(df: pd.DataFrame) -> pd.DataFrame:
-    return df[df["evaluation_eligible"] == 1].copy()
-
-
 # =============================================================================
 # Bootstrap AUC CI
 # =============================================================================
-
-
-def _bootstrap_auc(
-    y_true: np.ndarray,
-    y_score: np.ndarray,
-    groups: np.ndarray,
-    n_boot: int = 1000,
-    seed: int = 0,
-) -> tuple[float, float]:
-    """
-    Bootstrap 95% CI for AUC by resampling matched pairs (groups) with
-    replacement. Returns (lower, upper).
-    """
-    rng = np.random.default_rng(seed)
-    unique_groups = np.unique(groups)
-    boot_aucs = []
-    for _ in range(n_boot):
-        sampled = rng.choice(unique_groups, size=len(unique_groups), replace=True)
-        idx = np.concatenate([np.where(groups == g)[0] for g in sampled])
-        y_b, s_b = y_true[idx], y_score[idx]
-        if len(np.unique(y_b)) < 2:
-            continue
-        boot_aucs.append(roc_auc_score(y_b, s_b))
-    boot_aucs = np.array(boot_aucs)
-    return float(np.percentile(boot_aucs, 2.5)), float(np.percentile(boot_aucs, 97.5))
 
 
 # =============================================================================
@@ -124,13 +101,13 @@ def evaluate_raw_score(
     Evaluate the raw LIBRA score as a decision function on the primary test
     set. No model is fitted; the score itself is the ranking function.
     """
-    eligible = _evaluation_eligible(test_df)
+    eligible = evaluation_eligible(test_df)
     y = eligible[LABEL_COL].values.astype(float)
     score = eligible[SCORE_COL].values.astype(float)
     groups = eligible[GROUP_COL].values
 
     auc = roc_auc_score(y, score)
-    ci_low, ci_high = _bootstrap_auc(y, score, groups, n_boot=n_boot, seed=seed)
+    ci_low, ci_high = bootstrap_auc_ci(y, score, groups, n_boot=n_boot, seed=seed)
 
     logger.info(
         f"Raw LIBRA score  AUC = {auc:.3f}  "
@@ -198,7 +175,7 @@ def evaluate_conditional_logit(
     of the raw score, so the AUC equals the raw-score AUC when the coefficient
     is positive (as expected for a risk score).
     """
-    eligible = _evaluation_eligible(test_df)
+    eligible = evaluation_eligible(test_df)
     y = eligible[LABEL_COL].values.astype(float)
     score = eligible[SCORE_COL].values.astype(float)
     groups = eligible[GROUP_COL].values
@@ -213,7 +190,7 @@ def evaluate_conditional_logit(
 
     linear_predictor = score * coef
     auc = roc_auc_score(y, linear_predictor)
-    ci_low, ci_high = _bootstrap_auc(y, linear_predictor, groups, n_boot=n_boot, seed=seed)
+    ci_low, ci_high = bootstrap_auc_ci(y, linear_predictor, groups, n_boot=n_boot, seed=seed)
 
     logger.info(
         f"Conditional logit  AUC = {auc:.3f}  "

@@ -57,83 +57,22 @@ from sklearn.preprocessing import StandardScaler
 import optuna
 from optuna.samplers import TPESampler
 
+
+sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
+from dcf_adni.modeling.bootstrap import bootstrap_auc_ci, paired_bootstrap_auc_diff
+from dcf_adni.modeling.schema import METADATA_COLS, evaluation_eligible, feature_cols
+
 logging.basicConfig(level=logging.INFO, format="%(name)s — %(message)s")
 logger = logging.getLogger(__name__)
-
-_METADATA_COLS = {
-    "subject_id", "pair_id", "group", "transition", "transition_label",
-    "matched_cohort", "analysis_set", "evaluation_eligible",
-    "abs_age_gap", "split", "split_group_source",
-    "first_conversion_month", "baseline_diagnosis", "n_followup_visits_ge12_with_diag",
-}
 
 LABEL_COL = "transition_label"
 GROUP_COL = "group"
 SUBJECT_ID_COL = "subject_id"
 
 
-def _feature_cols(df: pd.DataFrame) -> list[str]:
-    return [c for c in df.columns if c not in _METADATA_COLS]
-
-
-def _evaluation_eligible(df: pd.DataFrame) -> pd.DataFrame:
-    return df[df["evaluation_eligible"] == 1].copy()
-
-
 # =============================================================================
 # Bootstrap utilities
 # =============================================================================
-
-
-def _bootstrap_auc(
-    y_true: np.ndarray,
-    y_score: np.ndarray,
-    groups: np.ndarray,
-    n_boot: int = 1000,
-    seed: int = 0,
-) -> tuple[float, float]:
-    rng = np.random.default_rng(seed)
-    unique_groups = np.unique(groups)
-    boot_aucs = []
-    for _ in range(n_boot):
-        sampled = rng.choice(unique_groups, size=len(unique_groups), replace=True)
-        idx = np.concatenate([np.where(groups == g)[0] for g in sampled])
-        y_b, s_b = y_true[idx], y_score[idx]
-        if len(np.unique(y_b)) < 2:
-            continue
-        boot_aucs.append(roc_auc_score(y_b, s_b))
-    return float(np.percentile(boot_aucs, 2.5)), float(np.percentile(boot_aucs, 97.5))
-
-
-def _bootstrap_auc_diff(
-    y_true: np.ndarray,
-    y_score_a: np.ndarray,
-    y_score_b: np.ndarray,
-    groups: np.ndarray,
-    n_boot: int = 10_000,
-    seed: int = 0,
-) -> dict:
-    rng = np.random.default_rng(seed)
-    unique_groups = np.unique(groups)
-    obs_diff = roc_auc_score(y_true, y_score_a) - roc_auc_score(y_true, y_score_b)
-    boot_diffs = []
-    for _ in range(n_boot):
-        sampled = rng.choice(unique_groups, size=len(unique_groups), replace=True)
-        idx = np.concatenate([np.where(groups == g)[0] for g in sampled])
-        y_b = y_true[idx]
-        if len(np.unique(y_b)) < 2:
-            continue
-        boot_diffs.append(
-            roc_auc_score(y_b, y_score_a[idx]) - roc_auc_score(y_b, y_score_b[idx])
-        )
-    boot_diffs = np.array(boot_diffs)
-    return {
-        "observed_diff": obs_diff,
-        "ci_low": float(np.percentile(boot_diffs, 2.5)),
-        "ci_high": float(np.percentile(boot_diffs, 97.5)),
-        "p_value": float(np.mean(boot_diffs <= 0)),
-        "n_boot": len(boot_diffs),
-    }
 
 
 # =============================================================================
@@ -566,8 +505,8 @@ def run(
     mrf_train = pd.read_csv(mrf_train_path)
     mrf_test = pd.read_csv(mrf_test_path)
 
-    bmca_feature_cols = _feature_cols(bmca_train)
-    mrf_feature_cols = _feature_cols(mrf_train)
+    bmca_feature_cols = feature_cols(bmca_train)
+    mrf_feature_cols = feature_cols(mrf_train)
     bmca_dim = len(bmca_feature_cols)
     mrf_dim = len(mrf_feature_cols)
 
@@ -583,7 +522,7 @@ def run(
     X_mrf_test_raw = mrf_test[mrf_feature_cols].values.astype(np.float32)
 
     # Test set evaluation targets
-    eligible_test = _evaluation_eligible(bmca_test)
+    eligible_test = evaluation_eligible(bmca_test)
     y_test = eligible_test[LABEL_COL].values.astype(np.float32)
     groups_test = eligible_test[GROUP_COL].values
     eligible_idx = eligible_test.index
@@ -614,7 +553,7 @@ def run(
     )
     cb_test_proba = cb_model.predict_proba(eligible_test[bmca_feature_cols])[:, 1]
     cb_auc = roc_auc_score(y_test, cb_test_proba)
-    cb_ci = _bootstrap_auc(y_test, cb_test_proba, groups_test, n_boot, seed)
+    cb_ci = bootstrap_auc_ci(y_test, cb_test_proba, groups_test, n_boot, seed)
     cb_imp = (
         pd.DataFrame({
             "feature": bmca_feature_cols,
@@ -658,7 +597,7 @@ def run(
     )
     nn_bmca_test_proba = nn_bmca_test_proba_full[eligible_idx]
     nn_bmca_auc = roc_auc_score(y_test, nn_bmca_test_proba)
-    nn_bmca_ci = _bootstrap_auc(y_test, nn_bmca_test_proba, groups_test, n_boot, seed)
+    nn_bmca_ci = bootstrap_auc_ci(y_test, nn_bmca_test_proba, groups_test, n_boot, seed)
     nn_bmca_imp = _neural_feature_importance(nn_bmca_model, bmca_feature_cols)
     logger.info(
         f"Neural BMCA-only: AUC={nn_bmca_auc:.4f} [{nn_bmca_ci[0]:.3f}, {nn_bmca_ci[1]:.3f}] "
@@ -695,7 +634,7 @@ def run(
     )
     nn_mt_test_proba = nn_mt_test_proba_full[eligible_idx]
     nn_mt_auc = roc_auc_score(y_test, nn_mt_test_proba)
-    nn_mt_ci = _bootstrap_auc(y_test, nn_mt_test_proba, groups_test, n_boot, seed)
+    nn_mt_ci = bootstrap_auc_ci(y_test, nn_mt_test_proba, groups_test, n_boot, seed)
     nn_mt_imp = _neural_feature_importance(nn_mt_model, bmca_feature_cols)
     best_lambda = nn_mt_params.get("lambda_aux", 0.0)
     logger.info(
@@ -725,7 +664,7 @@ def run(
     ]
     diffs = []
     for comp_name, score_a, score_b in comparisons:
-        d = _bootstrap_auc_diff(y_test, score_a, score_b, groups_test, 10_000, seed)
+        d = paired_bootstrap_auc_diff(y_test, score_a, score_b, groups_test, 10_000, seed)
         d["comparison"] = comp_name
         diffs.append(d)
         logger.info(

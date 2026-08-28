@@ -62,22 +62,15 @@ from sklearn.metrics import roc_auc_score
 from sklearn.model_selection import KFold
 from sklearn.preprocessing import StandardScaler
 
+
+sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
+from dcf_adni.modeling.schema import METADATA_COLS, feature_cols
+
 logging.basicConfig(level=logging.INFO, format="%(name)s — %(message)s")
 logger = logging.getLogger(__name__)
 
-_METADATA_COLS = {
-    "subject_id", "pair_id", "group", "transition", "transition_label",
-    "matched_cohort", "analysis_set", "evaluation_eligible",
-    "abs_age_gap", "split", "split_group_source",
-    "first_conversion_month", "baseline_diagnosis", "n_followup_visits_ge12_with_diag",
-}
-
 LABEL_COL = "transition_label"
 GROUP_COL = "group"
-
-
-def _feature_cols(df: pd.DataFrame) -> list[str]:
-    return [c for c in df.columns if c not in _METADATA_COLS]
 
 
 # =============================================================================
@@ -235,7 +228,7 @@ def run(
     Path(output_dir).mkdir(parents=True, exist_ok=True)
 
     mrf_train = pd.read_csv(mrf_train_path)
-    feature_cols = _feature_cols(mrf_train)
+    feats = feature_cols(mrf_train)
 
     mrf_primary = mrf_train[mrf_train["analysis_set"] == "primary"].copy()
     mrf_aug = mrf_train[mrf_train["analysis_set"] == "augmentation"].copy()
@@ -248,18 +241,18 @@ def run(
         f"({len(mrf_primary)} subjects, CN→MCI)\n"
         f"Augmentation pairs:{mrf_aug[GROUP_COL].nunique()} "
         f"({len(mrf_aug)} subjects, CI→dementia)\n"
-        f"MRF features:      {len(feature_cols)}"
+        f"MRF features:      {len(feats)}"
     )
 
     # ------------------------------------------------------------------
     # SNR diagnostic for both sets
     # ------------------------------------------------------------------
     logger.info("\n--- Within-pair SNR: primary (CN→MCI) ---")
-    snr_primary = compute_snr(mrf_primary, feature_cols)
+    snr_primary = compute_snr(mrf_primary, feats)
     snr_primary.columns = ["feature", "mean_delta_primary", "std_delta_primary", "snr_primary"]
 
     logger.info("\n--- Within-pair SNR: augmentation (CI→dementia) ---")
-    snr_aug = compute_snr(mrf_aug, feature_cols)
+    snr_aug = compute_snr(mrf_aug, feats)
     snr_aug.columns = ["feature", "mean_delta_aug", "std_delta_aug", "snr_aug"]
 
     snr_comparison = snr_primary.merge(snr_aug, on="feature")
@@ -287,7 +280,7 @@ def run(
     # ------------------------------------------------------------------
     logger.info("\n--- Contrast model: primary pairs (CN→MCI) ---")
     result_primary = run_contrast_model(
-        mrf_primary, feature_cols, label="Primary (CN→MCI)",
+        mrf_primary, feats, label="Primary (CN→MCI)",
         seed=seed, cv_folds=cv_folds,
     )
     result_primary["coef_df"].to_csv(
@@ -299,7 +292,7 @@ def run(
     # ------------------------------------------------------------------
     logger.info("\n--- Contrast model: augmentation pairs (CI→dementia) ---")
     result_aug = run_contrast_model(
-        mrf_aug, feature_cols, label="Augmentation (CI→dementia)",
+        mrf_aug, feats, label="Augmentation (CI→dementia)",
         seed=seed, cv_folds=cv_folds,
     )
     result_aug["coef_df"].to_csv(

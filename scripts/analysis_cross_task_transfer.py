@@ -26,19 +26,12 @@ from catboost import CatBoostClassifier
 from sklearn.metrics import roc_auc_score
 from sklearn.model_selection import StratifiedGroupKFold
 
-from model_strate_cv_evaluation import (
-    GROUP_COL,
-    LABEL_COL,
-    _METADATA_COLS,
-    _bootstrap_auc,
-    _bootstrap_paired_auc_diff,
-    _feature_cols,
-    _load_combined,
-)
 
 import sys
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
+from dcf_adni.modeling.bootstrap import bootstrap_auc_ci, paired_bootstrap_auc_diff
+from dcf_adni.modeling.schema import GROUP_COL, METADATA_COLS, TRANSITION_COL, feature_cols, load_combined
 from dcf_adni.paths import RESULTS_DIR
 
 logging.basicConfig(level=logging.INFO, format="%(name)s — %(message)s")
@@ -61,11 +54,11 @@ def _train_and_predict(
     optuna.logging.set_verbosity(optuna.logging.WARNING)
 
     X_train = train_df[feature_cols]
-    y_train = train_df[LABEL_COL].astype(float)
+    y_train = train_df[TRANSITION_COL].astype(float)
     groups_train = train_df[GROUP_COL]
 
     X_test = test_df[feature_cols]
-    y_test = test_df[LABEL_COL].astype(float).values
+    y_test = test_df[TRANSITION_COL].astype(float).values
     groups_test = test_df[GROUP_COL].values
 
     # Inner CV for hyperparameter tuning
@@ -118,7 +111,7 @@ def _train_and_predict(
 
     test_preds = final_model.predict_proba(X_test)[:, 1]
     test_auc = roc_auc_score(y_test, test_preds)
-    ci_low, ci_high = _bootstrap_auc(y_test, test_preds, groups_test, n_boot=2000, seed=seed)
+    ci_low, ci_high = bootstrap_auc_ci(y_test, test_preds, groups_test, n_boot=2000, seed=seed)
 
     imp = final_model.get_feature_importance()
     importance_df = (
@@ -158,14 +151,14 @@ def run(
 ) -> dict:
     Path(output_dir).mkdir(parents=True, exist_ok=True)
 
-    bmca_df = _load_combined(bmca_path)
-    mrf_df = _load_combined(mrf_path)
+    bmca_df = load_combined(bmca_path)
+    mrf_df = load_combined(mrf_path)
 
-    bmca_features = _feature_cols(bmca_df, bmca_audit)
-    mrf_features = _feature_cols(mrf_df, mrf_audit)
+    bmca_features = feature_cols(bmca_df, bmca_audit)
+    mrf_features = feature_cols(mrf_df, mrf_audit)
 
     # Build BMCA+MRF
-    meta_cols = [c for c in bmca_df.columns if c in _METADATA_COLS]
+    meta_cols = [c for c in bmca_df.columns if c in METADATA_COLS]
     bmca_mrf_df = bmca_df.merge(
         mrf_df.drop(columns=[c for c in meta_cols if c != "subject_id"], errors="ignore"),
         on="subject_id",
@@ -222,7 +215,7 @@ def run(
     # Paired bootstrap: BMCA+MRF vs BMCA
     y_test = results["BMCA"]["y_test"]
     groups = results["BMCA"]["groups_test"]
-    bt = _bootstrap_paired_auc_diff(
+    bt = paired_bootstrap_auc_diff(
         y_test,
         results["BMCA+MRF"]["test_preds"],
         results["BMCA"]["test_preds"],

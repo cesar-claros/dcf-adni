@@ -45,21 +45,6 @@ from dcf_adni.paths import RESULTS_DIR
 logging.basicConfig(level=logging.INFO, format="%(name)s — %(message)s")
 logger = logging.getLogger(__name__)
 
-# Legacy aliases: the analysis_* scripts and the TabPFN evaluation import these
-# names from this module. New code should import from dcf_adni.modeling instead.
-_METADATA_COLS = METADATA_COLS
-LABEL_COL = TRANSITION_COL
-_feature_cols = feature_cols
-_bootstrap_auc = bootstrap_auc_ci
-_bootstrap_paired_auc_diff = paired_bootstrap_auc_diff
-_load_combined = load_combined
-
-
-# The nested-CV protocol lives in the package now; this alias keeps the
-# historical entry point and its importers working.
-run_cv_for_feature_set = run_nested_cv
-
-
 def run(
     bmca_path: str = "data/adni_bmca_features_strate_combined_matched.csv",
     mrf_path: str = "data/adni_mrf_features_strate_combined_matched.csv",
@@ -75,14 +60,14 @@ def run(
 ) -> dict:
     Path(output_dir).mkdir(parents=True, exist_ok=True)
 
-    bmca_df = _load_combined(bmca_path)
-    mrf_df = _load_combined(mrf_path)
+    bmca_df = load_combined(bmca_path)
+    mrf_df = load_combined(mrf_path)
 
-    bmca_features = _feature_cols(bmca_df, bmca_audit)
-    mrf_features = _feature_cols(mrf_df, mrf_audit)
+    bmca_features = feature_cols(bmca_df, bmca_audit)
+    mrf_features = feature_cols(mrf_df, mrf_audit)
 
     # Build BMCA+MRF by merging on metadata
-    meta_cols = [c for c in bmca_df.columns if c in _METADATA_COLS]
+    meta_cols = [c for c in bmca_df.columns if c in METADATA_COLS]
     bmca_mrf_df = bmca_df.merge(
         mrf_df.drop(columns=[c for c in meta_cols if c != "subject_id"], errors="ignore"),
         on="subject_id",
@@ -111,7 +96,7 @@ def run(
         ("BMCA+MRF", bmca_mrf_df, bmca_mrf_features),
     ]:
         logger.info(f"\n{'='*60}\n{name} ({len(feats)} features)\n{'='*60}")
-        r = run_cv_for_feature_set(
+        r = run_nested_cv(
             df, feats, name,
             n_outer=n_outer, n_inner=n_inner, n_iter=n_iter,
             seed=seed, n_jobs=n_jobs, training_mode=training_mode,
@@ -133,7 +118,7 @@ def run(
         libra_valid = ~np.isnan(libra_scores) & ~np.isnan(y_cv)
         if libra_valid.sum() > 0 and len(np.unique(y_cv[libra_valid])) >= 2:
             libra_auc = roc_auc_score(y_cv[libra_valid], libra_scores[libra_valid])
-            libra_ci_low, libra_ci_high = _bootstrap_auc(
+            libra_ci_low, libra_ci_high = bootstrap_auc_ci(
                 y_cv[libra_valid], libra_scores[libra_valid],
                 groups_cv[libra_valid], n_boot=2000, seed=seed,
             )
@@ -188,7 +173,7 @@ def run(
     bootstrap_rows = []
     for name_a, name_b in comparisons:
         if name_a in results and name_b in results:
-            bt = _bootstrap_paired_auc_diff(
+            bt = paired_bootstrap_auc_diff(
                 y_true, results[name_a]["oof_scores"], results[name_b]["oof_scores"],
                 groups, n_boot=10000, seed=seed,
             )

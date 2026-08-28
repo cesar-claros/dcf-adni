@@ -49,6 +49,7 @@ from sklearn.model_selection import StratifiedKFold
 import sys
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
+from dcf_adni.modeling.schema import METADATA_COLS
 from dcf_adni.paths import RESULTS_DIR
 
 logging.basicConfig(level=logging.INFO, format="%(name)s — %(message)s")
@@ -56,22 +57,10 @@ logger = logging.getLogger(__name__)
 
 LIBRA_COL = "libra_supported_rescaled_0_100"
 
-_METADATA_COLS = {
-    "subject_id",
-    "pair_id",
-    "group",
-    "transition",
-    "transition_label",
-    "matched_cohort",
-    "analysis_set",
-    "evaluation_eligible",
-    "abs_age_gap",
-    "split",
-    "split_group_source",
-    "first_conversion_month",
+# The shared schema plus survival-frame provenance columns that this probe
+# derives (event month, baseline-row bookkeeping).
+_METADATA_COLS = METADATA_COLS | {
     "first_dementia_month",
-    "baseline_diagnosis",
-    "n_followup_visits_ge12_with_diag",
     "has_baseline_row",
     "has_screening_row",
     "screening_fallback_allowed",

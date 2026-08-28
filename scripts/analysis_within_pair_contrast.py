@@ -32,16 +32,11 @@ from sklearn.metrics import roc_auc_score
 from sklearn.model_selection import StratifiedKFold
 from sklearn.preprocessing import StandardScaler
 
-from model_strate_cv_evaluation import (
-    GROUP_COL,
-    LABEL_COL,
-    _feature_cols,
-    _load_combined,
-)
 
 import sys
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
+from dcf_adni.modeling.schema import GROUP_COL, TRANSITION_COL, feature_cols, load_combined
 from dcf_adni.paths import RESULTS_DIR
 
 logging.basicConfig(level=logging.INFO, format="%(name)s — %(message)s")
@@ -68,8 +63,8 @@ def _build_pair_deltas(
         if len(pair) != 2:
             continue
 
-        transition_row = pair[pair[LABEL_COL] == 1]
-        control_row = pair[pair[LABEL_COL] == 0]
+        transition_row = pair[pair[TRANSITION_COL] == 1]
+        control_row = pair[pair[TRANSITION_COL] == 0]
 
         if len(transition_row) != 1 or len(control_row) != 1:
             continue
@@ -193,8 +188,8 @@ def run(
 ) -> dict:
     Path(output_dir).mkdir(parents=True, exist_ok=True)
 
-    mrf_df = _load_combined(mrf_path)
-    mrf_features = _feature_cols(mrf_df, mrf_audit)
+    mrf_df = load_combined(mrf_path)
+    mrf_features = feature_cols(mrf_df, mrf_audit)
 
     results = {}
     for population, label in [("primary", "CN->MCI/Dementia"), ("augmentation", "MCI->Dementia")]:

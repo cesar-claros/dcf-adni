@@ -23,15 +23,12 @@ from pathlib import Path
 import pandas as pd
 from scipy.stats import spearmanr
 
-from model_strate_cv_evaluation import (
-    _feature_cols,
-    _load_combined,
-    run_cv_for_feature_set,
-)
 
 import sys
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
+from dcf_adni.modeling.protocols import run_nested_cv
+from dcf_adni.modeling.schema import feature_cols, load_combined
 from dcf_adni.paths import RESULTS_DIR
 
 logging.basicConfig(level=logging.INFO, format="%(name)s — %(message)s")
@@ -50,14 +47,14 @@ def run(
 ) -> dict:
     Path(output_dir).mkdir(parents=True, exist_ok=True)
 
-    bmca_df = _load_combined(bmca_path)
-    bmca_features = _feature_cols(bmca_df, bmca_audit)
+    bmca_df = load_combined(bmca_path)
+    bmca_features = feature_cols(bmca_df, bmca_audit)
 
     logger.info(f"BMCA feature comparison: {len(bmca_features)} features")
 
     # Train on primary pairs only (CN -> MCI/Dementia)
     logger.info(f"\n{'='*60}\nBMCA on PRIMARY pairs (CN -> MCI/Dementia)\n{'='*60}")
-    r_primary = run_cv_for_feature_set(
+    r_primary = run_nested_cv(
         bmca_df, bmca_features, "BMCA_primary",
         n_outer=n_outer, n_inner=n_inner, n_iter=n_iter,
         seed=seed, n_jobs=n_jobs, training_mode="primary_only",
@@ -65,7 +62,7 @@ def run(
 
     # Train on augmentation pairs only (MCI -> Dementia)
     logger.info(f"\n{'='*60}\nBMCA on AUGMENTATION pairs (MCI -> Dementia)\n{'='*60}")
-    r_aug = run_cv_for_feature_set(
+    r_aug = run_nested_cv(
         bmca_df, bmca_features, "BMCA_augmentation",
         n_outer=n_outer, n_inner=n_inner, n_iter=n_iter,
         seed=seed, n_jobs=n_jobs, training_mode="augmentation_only",
