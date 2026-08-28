@@ -1,0 +1,5 @@
+question,comparison,observed_diff,ci_low_95,ci_high_95,p_value,n_boot
+Q1,BMCA+MRI vs BMCA,0.0078,-0.0089,0.0239,0.164,1000
+Q2,MRI vs BMCA,-0.1727,-0.2305,-0.1186,1.0,1000
+Q3,MRF+MRI vs MRI,-0.0082,-0.0331,0.0181,0.74,1000
+Q4,BMCA+MRF+MRI vs BMCA+MRI,0.0043,-0.0062,0.0169,0.254,1000
