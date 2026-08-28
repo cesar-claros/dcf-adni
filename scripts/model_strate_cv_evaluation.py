@@ -33,92 +33,27 @@ from sklearn.model_selection import StratifiedGroupKFold
 import sys
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
+from dcf_adni.modeling.bootstrap import bootstrap_auc_ci, paired_bootstrap_auc_diff
+from dcf_adni.modeling.schema import (
+    GROUP_COL,
+    METADATA_COLS,
+    TRANSITION_COL,
+    feature_cols,
+    load_combined,
+)
 from dcf_adni.paths import RESULTS_DIR
 
 logging.basicConfig(level=logging.INFO, format="%(name)s — %(message)s")
 logger = logging.getLogger(__name__)
 
-_METADATA_COLS = {
-    "subject_id", "pair_id", "group", "transition", "transition_label",
-    "matched_cohort", "analysis_set", "evaluation_eligible",
-    "abs_age_gap", "split", "split_group_source",
-    "first_conversion_month", "baseline_diagnosis", "n_followup_visits_ge12_with_diag",
-}
-LABEL_COL = "transition"
-GROUP_COL = "group"
-
-
-def _feature_cols(df: pd.DataFrame, audit_path: str | None = None) -> list[str]:
-    all_feats = [c for c in df.columns if c not in _METADATA_COLS]
-    if audit_path is None:
-        return all_feats
-    audit = pd.read_csv(audit_path)
-    keep = set(audit.loc[audit["keep_for_modeling"] == 1, "column"])
-    return [c for c in all_feats if c in keep]
-
-
-def _bootstrap_auc(
-    y_true: np.ndarray,
-    y_score: np.ndarray,
-    groups: np.ndarray,
-    n_boot: int = 2000,
-    seed: int = 0,
-) -> tuple[float, float]:
-    rng = np.random.default_rng(seed)
-    unique_groups = np.unique(groups)
-    boot_aucs = []
-    for _ in range(n_boot):
-        sampled = rng.choice(unique_groups, size=len(unique_groups), replace=True)
-        idx = np.concatenate([np.where(groups == g)[0] for g in sampled])
-        y_b, s_b = y_true[idx], y_score[idx]
-        if len(np.unique(y_b)) < 2:
-            continue
-        boot_aucs.append(roc_auc_score(y_b, s_b))
-    boot_aucs = np.array(boot_aucs)
-    return float(np.percentile(boot_aucs, 2.5)), float(np.percentile(boot_aucs, 97.5))
-
-
-def _bootstrap_paired_auc_diff(
-    y_true: np.ndarray,
-    scores_a: np.ndarray,
-    scores_b: np.ndarray,
-    groups: np.ndarray,
-    n_boot: int = 10000,
-    seed: int = 0,
-) -> dict:
-    """Paired bootstrap test for AUC(A) - AUC(B), resampling at group level."""
-    rng = np.random.default_rng(seed)
-    unique_groups = np.unique(groups)
-    observed_diff = roc_auc_score(y_true, scores_a) - roc_auc_score(y_true, scores_b)
-
-    boot_diffs = []
-    for _ in range(n_boot):
-        sampled = rng.choice(unique_groups, size=len(unique_groups), replace=True)
-        idx = np.concatenate([np.where(groups == g)[0] for g in sampled])
-        y_b = y_true[idx]
-        if len(np.unique(y_b)) < 2:
-            continue
-        auc_a = roc_auc_score(y_b, scores_a[idx])
-        auc_b = roc_auc_score(y_b, scores_b[idx])
-        boot_diffs.append(auc_a - auc_b)
-
-    boot_diffs = np.array(boot_diffs)
-    p_value = float(np.mean(boot_diffs <= 0))
-
-    return {
-        "observed_diff": observed_diff,
-        "ci_low": float(np.percentile(boot_diffs, 2.5)),
-        "ci_high": float(np.percentile(boot_diffs, 97.5)),
-        "p_value": p_value,
-        "n_boot": len(boot_diffs),
-    }
-
-
-def _load_combined(path: str) -> pd.DataFrame:
-    df = pd.read_csv(path)
-    df[LABEL_COL] = pd.to_numeric(df[LABEL_COL], errors="coerce")
-    df[GROUP_COL] = pd.to_numeric(df[GROUP_COL], errors="coerce")
-    return df
+# Legacy aliases: the analysis_* scripts and the TabPFN evaluation import these
+# names from this module. New code should import from dcf_adni.modeling instead.
+_METADATA_COLS = METADATA_COLS
+LABEL_COL = TRANSITION_COL
+_feature_cols = feature_cols
+_bootstrap_auc = bootstrap_auc_ci
+_bootstrap_paired_auc_diff = paired_bootstrap_auc_diff
+_load_combined = load_combined
 
 
 def run_cv_for_feature_set(
