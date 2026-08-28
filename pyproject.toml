@@ -17,7 +17,10 @@ dependencies = [
     "pulp>=2.8.0",
     "pyyaml>=6.0",
     "rich>=13.9.4",
-    "scikit-learn>=1.5.0",
+    # <1.7: RocCurveDisplay.from_predictions(color=...) kwarg pass-through was
+    # deprecated in 1.7 and removed in 1.9; the plotting code across the
+    # experiment scripts relies on it.
+    "scikit-learn>=1.5.0,<1.7",
     "scikit-optimize>=0.10.2",
     "scipy>=1.14.0",
     "seaborn>=0.13.2",
